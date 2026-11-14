@@ -106,6 +106,8 @@ class MaterialList(TypedList):
         element.reaction = self._reaction
         element.role_in_reaction = self._mat_type
         element.properties['position'] = len(self)
+        # Set by the client, not the caller: not a change that only reaction.save() would keep.
+        element._pending_link_fields.discard('position')
 
     def after_append(self, element: Sample):
         """
@@ -1397,7 +1399,15 @@ class Reaction(AbstractElement):
         :param load_after_save: If true, the element is reloaded from the server after saving
         """
         self.update_equivalent()
-        return super().save(load_after_save)
+        # Collected before the save: a create or load_after_save re-parses the reaction and builds
+        # new material objects, while the caller holds the old ones.
+        materials = [*self.starting_materials, *self.reactants, *self.products, *self.solvents,
+                     *self.purification_solvents]
+        result = super().save(load_after_save)
+        # The materials' link fields went out with the reaction.
+        for material in materials:
+            material._pending_link_fields.clear()
+        return result
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
         if serialize_data is None:
@@ -1588,6 +1598,8 @@ class Reaction(AbstractElement):
         :param value: The chain of values, the last being the new value
         :return: ``False``, as the handler applies the change itself
         """
+        if name[0] in ('rinchi_string', 'rinchi_web_key'):
+            raise ValueError(f'{name[0]} is computed by the ELN from the reaction; it cannot be set.')
         self._rich_text_write(name, value)
         pyd_name = list(name)
         if pyd_name[0] == 'gaseous':

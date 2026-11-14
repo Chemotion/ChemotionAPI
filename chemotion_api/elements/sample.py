@@ -579,6 +579,13 @@ class MoleculeManager:
         return float(res.json())
 
 
+#: A sample's link to a reaction (the ELN's reactions_samples). The reaction's payload carries these;
+#: the sample routes do not store them, so they are saved only with the reaction.
+_REACTION_LINK_FIELDS = ('reference', 'equivalent', 'coefficient', 'position', 'show_label', 'waste',
+                         'gas_type', 'gas_phase_data', 'conversion_rate',
+                         'weight_percentage_reference', 'weight_percentage')
+
+
 @register_element_type('sample', url='/api/v1/samples')
 class Sample(AbstractElement):
     """
@@ -1555,7 +1562,41 @@ class Sample(AbstractElement):
                     # meant nobody found out until the numbers were wrong on the server.
                     logger.warning('The equivalents of the reaction could not be updated: %r', e)
 
+    @property
+    def _pending_link_fields(self) -> set[str]:
+        """Reaction-link fields written through ``properties`` since the last reaction save."""
+        if not hasattr(self, '_pending_link_set'):
+            self._pending_link_set: set[str] = set()
+        return self._pending_link_set
+
+    def save(self, load_after_save: bool = False):
+        """Save the sample.
+
+        :raises ValueError: if a field of the sample's place in a reaction (``equivalent``,
+            ``reference``, ``coefficient``, …) was changed: the sample routes do not store those, so
+            the change would be lost without an error. Save the reaction instead.
+        """
+        if self._pending_link_fields:
+            raise ValueError(
+                f'{", ".join(sorted(self._pending_link_fields))} belong to this sample\'s place in a '
+                f'reaction and are saved with the reaction: call reaction.save(), not sample.save().')
+        was_new = self.is_new
+        metrics = self.properties.get('metrics') if was_new else None
+        super().save(load_after_save)
+        if was_new and metrics and metrics != self.json_data.get('metrics'):
+            # The create route does not take `metrics` (the update route does), so a new sample
+            # would silently get the default display units.
+            self.properties['metrics'] = metrics
+            super().save(load_after_save)
+
     def on_properties_change(self, dict_obj, name, value):
+        """Apply a property change; a reaction-link field is marked pending only once it succeeded."""
+        result = self._apply_property_change(dict_obj, name, value)
+        if name[0] in _REACTION_LINK_FIELDS:
+            self._pending_link_fields.add(name[0])
+        return result
+
+    def _apply_property_change(self, dict_obj, name, value):
         """
         Validates and applies a change to one of the sample's properties.
 
@@ -1569,9 +1610,13 @@ class Sample(AbstractElement):
         :return: ``False``, as the handler applies the change itself
         :raises ValueError: If the new value violates a constraint (e.g. purity or coefficient range)
         """
+        # Fields the sample routes do not store (they are dropped without an error), checked
+        # against ELN v4.0.1's declared parameters (2026-11-14).
+        top = name[0]
+        if top == 'short_label' and not self.is_new:
+            raise ValueError("A saved sample's short label cannot be changed: the ELN ignores it on update.")
         # Only the field being written is copied and validated (see `validate_field`). A whole
         # field is the new value outright; a nested write is applied to a copy of that one field.
-        top = name[0]
         proposed = proposed_field(self._properties.get(top), name, value[-1])
         coerced_val = value_at(validate_field(SamplePropertiesModel, top, proposed), name[1:])
 
