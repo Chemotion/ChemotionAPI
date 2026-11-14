@@ -28,7 +28,7 @@ os.environ.setdefault(
 project = 'Chemotion API'
 copyright = '2023-2026, Martin Starman <martin.starman@kit.edu> and contributors'
 author = 'Martin Starman and contributors'
-release = '401.0.0'
+release = '401.1.0'
 
 
 # -- General configuration ---------------------------------------------------

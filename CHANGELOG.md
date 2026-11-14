@@ -3,6 +3,37 @@
 The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.1, `312.x.y` ↔ ELN 3.1.2,
 `211.x.y` ↔ ELN 2.1.1.
 
+## 401.1.0 — changes the ELN would drop are refused
+
+### Changed
+
+- **Changes the ELN would not store are refused.** The ELN keeps only the fields a route declares
+  and drops the rest without an error. Changing a sample's place in a reaction (`reference`,
+  `coefficient`, `waste`, …) and then calling `sample.save()` raises `ValueError`; save the reaction
+  instead. Changing a saved sample's short label, or a reaction's RInChI, raises `ValueError`.
+- **New elements start from the ELN editor's own defaults**, so one created through the client
+  matches one created in the web interface: samples, reactions, wellplates, research plans,
+  device descriptions and SBMM samples gained the fields the editor sets.
+
+### Fixed
+
+- A file queued on an element that was not loaded yet, such as a sample of a wellplate, was dropped,
+  and so was a segment edit. Segments, analyses and attachments now load the full record first.
+- Display units (`metrics`) set on a new sample were lost: the create route does not take them, so
+  the client now sends them again after creating the sample.
+- A SciFinder-n search that failed on the provider's side (a timeout, a bad structure) raised
+  `PermissionError` as if the credential were missing; it now raises `ConnectionError`. Only the
+  ELN's "token missing or expired" answer is a `PermissionError`.
+- A collection export that times out names the notifications that did arrive, so a change in the
+  ELN's wording does not look like a job that never finished. A failed export is recognised by the
+  notification's channel, so a collection label that reads like a failure is not taken for one.
+
+### Also
+
+- `Collection.export_zip()` notes that the ELN also emails you when the export is ready.
+- `CONTRIBUTING.md` lists the rules for code that talks to the ELN, and the sample and reaction
+  pages say which fields only `reaction.save()` stores.
+
 ## 🚨 401.0.0 — Chemotion ELN v4 only, verified against a released server
 
 **Breaking: this release supports ELN v4 exclusively.** ELN 3.x and older are not supported and
