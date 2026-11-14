@@ -791,7 +791,7 @@ class Sample(AbstractElement):
         """
         The molecule of the sample
         """
-        self._load_if_partial()
+        self._require_loaded()
         if self._molecule is None:
             return Molecule({})
         return self._molecule

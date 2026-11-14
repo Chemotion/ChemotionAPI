@@ -380,7 +380,7 @@ class ResearchPlan(AbstractElement):
         if value is None:
             return None
         try:
-            res = self.attachments.load_attachment(identifier=value.get('public_name'))
+            res = self._attachment_container().load_attachment(identifier=value.get('public_name'))
         except ValueError:
             # The attachment is gone; keep the block as it was, so a save neither crashes nor
             # drops it.
