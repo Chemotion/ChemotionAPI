@@ -48,6 +48,8 @@ pip install .
 
 ## Development tasks
 
+Rules for code that talks to the ELN are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Everything is automated through [`just`](./justfile) — run `just` for the full list:
 
 ```bash

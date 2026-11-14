@@ -1029,6 +1029,8 @@ class AbstractCollection:
 
         This is Chemotion's native export archive (the one its UI produces), not ``.eln``. The server builds it in a background
         job; this waits for its notification, then downloads the archive to ``destination``.
+        **The ELN also emails you** that the export is ready, with the download link, as it does
+        for an export started in its web interface.
 
         :raises PermissionError: if you may not export this collection.
         :raises TimeoutError: if the archive is not ready within ``timeout`` seconds.
