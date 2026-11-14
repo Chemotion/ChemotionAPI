@@ -20,8 +20,7 @@
   "molfile": "",
   "molecule_id": null,
   "description": "",
-  "molecule": {
-  },
+  "molecule": {},
   "residues": [],
   "elemental_compositions": [
     {
@@ -47,6 +46,10 @@
   "position": 0,
   "show_label": true,
   "real_amount_unit": "g",
-  "user_labels": []
+  "user_labels": [],
+  "gas_type": "off",
+  "weight_percentage": null,
+  "sample_type": "Micromolecule",
+  "components": [],
+  "ancestor_ids": []
 }
-
