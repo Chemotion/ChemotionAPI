@@ -555,6 +555,9 @@ class AbstractElement:
                  id: int | None = None, element_type: str | None = None, avoid_load: bool = False):
         # Elements from a listing or search are only partially loaded; they load fully on first data access
         self._is_partial = False
+        # Like `_is_partial`, but kept until a load succeeds: `load()` clears `_is_partial` before
+        # its request, so after a failed load only this still says the data came from a listing.
+        self._listed_unloaded = False
         self._attachments: Attachments | None = None
         self._generic_segments = generic_segments
         self._session = session
@@ -690,9 +693,8 @@ class AbstractElement:
         instead of handing out the listing's incomplete data, as analyses, segments and attachments
         did before. An element built from a parent's payload carries its data already, so a failed
         fetch of its own record (e.g. one you may not read) is not an error."""
-        was_listed = self._is_partial
         self._ensure_loaded()
-        if was_listed and self._load_failed and not self._data_loaded:
+        if self._listed_unloaded and self._load_failed and not self._data_loaded:
             raise ConnectionError(f'The full record of {self.element_type} {self.id} could not be '
                                   f'loaded; fetch the element again.')
 
@@ -898,6 +900,7 @@ class AbstractElement:
         try:
             attachments_data, json_data = self._load_data_from_server()
             self._load_failed = False
+            self._listed_unloaded = False
             if attachments_data is not None:
                 self._attachments = Attachments(self._session, attachments_data)
             self._set_json_data(json_data)
@@ -912,6 +915,7 @@ class AbstractElement:
         uses the incomplete data. Used by :class:`chemotion_api.elements.ElementSet`.
         """
         self._is_partial = not self.is_new
+        self._listed_unloaded = self._is_partial
 
     def _load_if_partial(self):
         if self._is_partial:

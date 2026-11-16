@@ -111,7 +111,7 @@ def test_import_spreadsheet_does_not_save_the_wellplate(tmp_path, monkeypatch):
     plate = Wellplate.__new__(Wellplate)
     plate._session, plate._attachments = session, Attachments(session, [{'id': 1, 'filename': 'old.txt'}])
     plate._saved_id_for = lambda what: 4
-    plate._is_partial, plate._data_loaded = False, True
+    plate._is_partial, plate._listed_unloaded, plate._data_loaded = False, False, True
     plate.save = plate.load = lambda *a, **k: pytest.fail('the wellplate itself must not be saved or reloaded')
     plate._load_data_from_server = lambda: ([{'id': 1}, {'id': 2, 'filename': 'plate.xlsx'}], {'id': 4})
     plate._set_json_data = lambda data: None

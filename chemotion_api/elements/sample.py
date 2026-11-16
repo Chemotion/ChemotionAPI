@@ -4,6 +4,7 @@ Defines the :class:`Sample` element together with its molecule, solvent and gas-
 and its quantity/equivalent calculations.
 """
 import json
+import math
 from dataclasses import dataclass
 import logging
 import re
@@ -903,7 +904,7 @@ class Sample(AbstractElement):
             )
         except KeyError:  # the conversion needs a molecular weight the molecule does not have
             return None
-        return None if converted != converted else converted  # NaN: not convertible
+        return None if math.isnan(converted) else converted  # NaN: not convertible
 
     @property
     def equivalent(self) -> float:
@@ -1476,11 +1477,13 @@ class Sample(AbstractElement):
             if unit not in self.allowed_quantity_units():
                 raise KeyError(
                     f'The value {unit.value}  cannot be set for this sample. This is most likely due to the role of this sample in the reaction.')
-            self._properties['equivalent'] = value
             ref_mol = self.reaction.reference_sample.mol
             if ref_mol is None:
+                # Checked before the write, so a refused equivalent does not stay on the sample
+                # next to its old amount.
                 raise ValueError('The equivalent cannot be set: the reference sample has no amount in mol '
                                  '(no amount entered, or no molecular weight to convert it).')
+            self._properties['equivalent'] = value
             self.set_amount(ref_mol * value, QuantityUnit.Mole)
         elif self.properties['reference']:
             self._properties['equivalent'] = 1
@@ -1601,12 +1604,15 @@ class Sample(AbstractElement):
                 f'reaction and are saved with the reaction: call reaction.save(), not sample.save().')
         was_new = self.is_new
         metrics = self.properties.get('metrics') if was_new else None
-        super().save(load_after_save)
-        if was_new and metrics and metrics != self.json_data.get('metrics'):
+        # Reload only after the last request, not after the create and again after the update.
+        super().save(load_after_save and not metrics)
+        if metrics and metrics != self.json_data.get('metrics'):
             # The create route does not take `metrics` (the update route does), so a new sample
             # would silently get the default display units.
             self.properties['metrics'] = metrics
             super().save(load_after_save)
+        elif metrics and load_after_save:
+            self.load()
 
     def on_properties_change(self, dict_obj, name, value):
         """Apply a property change; a reaction-link field is marked pending only once it succeeded."""

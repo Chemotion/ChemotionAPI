@@ -65,3 +65,20 @@ def test_a_failed_load_raises_from_the_accessors_instead_of_returning_listing_da
     sample.mark_partial()
     with pytest.raises(ConnectionError):
         _ = sample.analyses
+
+
+def test_a_failed_load_keeps_raising_on_later_accesses():
+    """`load()` clears `_is_partial` before its request, so the second access used to return the
+    listing's data."""
+    import pytest
+    listing = {k: _sample_json(2)[k] for k in ('id', 'type', 'name', 'short_label')}
+
+    def failing_get(url, **kw):
+        return SimpleNamespace(status_code=500, headers={}, text='boom', json=lambda: {},
+                               request=None, url=url)
+    sample = Sample(SEGMENTS, SimpleNamespace(**vars(SESSION), get=failing_get), json_data=listing)
+    sample.mark_partial()
+    _ = sample.properties                   # lenient: logs and falls back to the listing
+    for _attempt in range(2):
+        with pytest.raises(ConnectionError):
+            _ = sample.analyses

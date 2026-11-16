@@ -541,5 +541,7 @@ def test_equivalent_without_a_reference_mol_is_a_clear_error():
     reaction = _reaction([ref], [reactant])
     ref.properties['target_amount']['value'] = 1.0
     assert reaction.reference_sample is ref and ref.mol is None
+    before = reactant.properties['equivalent']
     with pytest.raises(ValueError, match='reference sample has no amount'):
         reactant.set_amount(0.5, QuantityUnit.Equivalent)
+    assert reactant.properties['equivalent'] == before   # the refused value is not kept
