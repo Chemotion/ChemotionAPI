@@ -40,11 +40,11 @@ def _reaction(starting_materials, reactants=()):
 def test_standalone_sample_properties():
     sample = _sample()
     sample.properties['purity'] = 0.5
-    sample.properties['coefficient'] = 2
-    sample.properties['reference'] = True
     sample.properties['real_amount']['value'] = 3.7
-    assert (sample.properties['purity'], sample.properties['coefficient']) == (0.5, 2)
-    assert sample.properties['reference'] is True
+    assert sample.properties['purity'] == 0.5
+    # Its place in a reaction is the reaction's to change (see test_dropped_fields.py)
+    with pytest.raises(ValueError, match='reaction'):
+        sample.properties['coefficient'] = 2
     # A standalone sample keeps target and real amount independent
     assert sample.properties['real_amount']['value'] == 3.7
     assert sample.properties['target_amount']['value'] == 0

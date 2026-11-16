@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass
 import logging
 import re
+import contextlib
 import copy
 import warnings
 from enum import Enum
@@ -587,6 +588,17 @@ _REACTION_LINK_FIELDS = ('reference', 'equivalent', 'coefficient', 'position', '
                          'weight_percentage_reference', 'weight_percentage')
 
 
+def _comparable(value):
+    """A link field's value in a form that compares by content (enums by value, objects as dicts)."""
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, 'to_dict'):
+        return value.to_dict()
+    if hasattr(value, 'model_dump'):
+        return value.model_dump()
+    return copy.deepcopy(value)
+
+
 @register_element_type('sample', url='/api/v1/samples')
 class Sample(AbstractElement):
     """
@@ -631,6 +643,12 @@ class Sample(AbstractElement):
         self._reaction = None
         self._role_in_reaction = None
         self._is_solvent = kwargs.pop("is_solvent", False)
+        # Reaction-link fields changed through `properties` since the reaction last saved them,
+        # and the value each had before its first change (to see a change being undone).
+        self._pending_link_set: set[str] = set()
+        self._link_baseline: dict[str, Any] = {}
+        # Set while the client itself writes a link field (see `_internal_link_write`).
+        self._internal_link_writes = 0
         super().__init__(*args, **kwargs)
 
     def _set_json_data(self, json_data):
@@ -1029,7 +1047,8 @@ class Sample(AbstractElement):
         origin_gas_type = self.gas_type
         self._properties['gas_type'] = gas_type
         if has_change and gas_type == GasType.GAS:
-            self.properties['gas_phase_data'] = GasPhaseObj(self)
+            with self._internal_link_write():
+                self.properties['gas_phase_data'] = GasPhaseObj(self)
         if has_change and origin_gas_type == GasType.FEEDSTOCK:
             cat_sample = self.reaction.get_catalyst()
             if cat_sample is not None:
@@ -1119,7 +1138,9 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save(True)
+        # The sample's own fields only: link fields still pending belong to its current reaction,
+        # which saves them; the subsample gets its own place in the reaction it joins.
+        self._save_own_fields(True)
         split_sample = copy.deepcopy(self.json_data)
         split_sample['parent_id'] = self.id
         split_sample['id'] = None
@@ -1145,7 +1166,7 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save()
+        self._save_own_fields()
         split_sample = copy.deepcopy(self.json_data)
         split_sample['id'] = None
 
@@ -1587,9 +1608,30 @@ class Sample(AbstractElement):
     @property
     def _pending_link_fields(self) -> set[str]:
         """Reaction-link fields written through ``properties`` since the last reaction save."""
-        if not hasattr(self, '_pending_link_set'):
-            self._pending_link_set: set[str] = set()
         return self._pending_link_set
+
+    def _clear_pending_link_fields(self) -> None:
+        """The reaction saved this material's link fields: nothing is pending any more."""
+        self._pending_link_set.clear()
+        self._link_baseline.clear()
+
+    @contextlib.contextmanager
+    def _internal_link_write(self):
+        """A link field the client sets itself (a material's position, the gas data of a gas),
+        also while the sample is not yet one of its reaction's materials."""
+        self._internal_link_writes += 1
+        try:
+            yield
+        finally:
+            self._internal_link_writes -= 1
+
+    def _is_own_material(self) -> bool:
+        """Whether this object is one of its reaction's materials, the objects ``reaction.save()``
+        serialises. Not true of a sample loaded on its own, nor through :attr:`reaction`, which
+        builds a new reaction holding other material objects."""
+        reaction = self._reaction
+        materials = getattr(reaction, '_properties_data', None) or {}
+        return any(m is self for role in self.material_types for m in (materials.get(role) or []))
 
     def save(self, load_after_save: bool = False):
         """Save the sample.
@@ -1602,6 +1644,12 @@ class Sample(AbstractElement):
             raise ValueError(
                 f'{", ".join(sorted(self._pending_link_fields))} belong to this sample\'s place in a '
                 f'reaction and are saved with the reaction: call reaction.save(), not sample.save().')
+        self._save_own_fields(load_after_save)
+
+    def _save_own_fields(self, load_after_save: bool = False) -> None:
+        """Save the sample's own fields. Pending link fields are not saved here (the sample routes
+        do not store them) and stay pending, with their values, for the reaction's save."""
+        pending = {field: self._properties.get(field) for field in self._pending_link_fields}
         was_new = self.is_new
         metrics = self.properties.get('metrics') if was_new else None
         # Reload only after the last request, not after the create and again after the update.
@@ -1613,12 +1661,30 @@ class Sample(AbstractElement):
             super().save(load_after_save)
         elif metrics and load_after_save:
             self.load()
+        if load_after_save and pending:
+            # The reload read the stored link values; the changes are still to be saved.
+            self._properties.update(pending)
 
     def on_properties_change(self, dict_obj, name, value):
-        """Apply a property change; a reaction-link field is marked pending only once it succeeded."""
+        """Apply a property change. A reaction-link field may only be changed on one of its
+        reaction's materials, where ``reaction.save()`` stores it; it is pending until then, unless
+        it is set back to the value it had."""
+        field = name[0]
+        if field not in _REACTION_LINK_FIELDS:
+            return self._apply_property_change(dict_obj, name, value)
+        if not self._internal_link_writes and not self._is_own_material():
+            raise ValueError(
+                f'{field!r} belongs to this sample\'s place in a reaction, which only the reaction '
+                f'saves. Change it on the reaction\'s material (e.g. reaction.starting_materials[i]) '
+                f'and call reaction.save().')
+        before = _comparable(self._properties.get(field))
         result = self._apply_property_change(dict_obj, name, value)
-        if name[0] in _REACTION_LINK_FIELDS:
-            self._pending_link_fields.add(name[0])
+        baseline = self._link_baseline.setdefault(field, before)
+        if _comparable(self._properties.get(field)) == baseline:
+            self._pending_link_set.discard(field)
+            del self._link_baseline[field]
+        else:
+            self._pending_link_set.add(field)
         return result
 
     def _apply_property_change(self, dict_obj, name, value):

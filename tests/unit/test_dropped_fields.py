@@ -21,12 +21,87 @@ def _sample():
     return sample
 
 
+def _material():
+    """A starting material of a loaded reaction: the object reaction.save() serialises."""
+    reaction = Reaction(SEGMENTS, SESSION, json_data={
+        'id': 1, 'type': 'reaction', 'name': '', 'reactants': [], 'products': [], 'solvents': [],
+        'purification_solvents': [],
+        'starting_materials': [_sample_json(2) | {'reference': False, 'coefficient': 1, 'waste': False}]})
+    reaction._data_loaded = True
+    return reaction, reaction.starting_materials[0]
+
+
 @pytest.mark.parametrize('field, value', [('waste', True), ('reference', True), ('coefficient', 2)])
-def test_a_link_field_changed_on_a_sample_cannot_be_saved_through_the_sample(field, value):
-    sample = _sample()
-    sample.properties[field] = value
+def test_a_link_field_changed_on_a_material_cannot_be_saved_through_the_sample(field, value):
+    _, material = _material()
+    material.properties[field] = value
     with pytest.raises(ValueError, match='reaction.save'):
-        sample.save()
+        material.save()
+
+
+@pytest.mark.parametrize('field, value', [('waste', True), ('reference', True), ('coefficient', 2)])
+def test_a_link_field_cannot_be_changed_on_a_sample_no_reaction_holds(field, value):
+    """Code review of PR #18: the write was accepted, and then no save could ever clear it."""
+    sample = _sample()
+    with pytest.raises(ValueError, match="reaction's material"):
+        sample.properties[field] = value
+    assert not sample._pending_link_fields
+
+
+def test_nor_on_a_sample_bound_to_a_reaction_it_is_not_a_material_of():
+    """`sample.reaction` builds a new reaction, whose materials are other objects."""
+    _, material = _material()
+    stray = _sample()
+    stray.reaction = material.reaction
+    with pytest.raises(ValueError, match="reaction's material"):
+        stray.properties['coefficient'] = 2
+
+
+def test_setting_a_link_field_back_clears_it():
+    _, material = _material()
+    material.properties['coefficient'] = 3
+    material.properties['coefficient'] = 2
+    assert material._pending_link_fields == {'coefficient'}
+    material.properties['coefficient'] = 1
+    assert not material._pending_link_fields
+
+
+def test_a_reaction_save_clears_the_pending_fields_and_their_old_values(monkeypatch):
+    from chemotion_api.elements.abstract_element import AbstractElement
+    reaction, material = _material()
+    material.properties['coefficient'] = 3
+    monkeypatch.setattr(AbstractElement, 'save', lambda self, load_after_save=False: None)
+    reaction.save()
+    assert not material._pending_link_fields
+    material.properties['coefficient'] = 1     # a change from the saved 3, not an undo
+    assert material._pending_link_fields == {'coefficient'}
+
+
+def test_a_material_with_a_pending_link_field_can_join_another_reaction(monkeypatch):
+    """Code review of PR #18: append() splits the sample, and the split's save refused it."""
+    from chemotion_api.elements.abstract_element import AbstractElement
+    _, material = _material()
+    material.properties['coefficient'] = 3
+    saves = []
+    monkeypatch.setattr(AbstractElement, 'save', lambda self, load_after_save=False: saves.append(self.id))
+    subsample = material.split()
+    assert saves == [2]
+    assert subsample.is_new and subsample.json_data['parent_id'] == 2
+    assert material._pending_link_fields == {'coefficient'}      # still the old reaction's to save
+    assert material.properties['coefficient'] == 3
+
+
+def test_a_pending_link_value_survives_the_split_reload(monkeypatch):
+    from chemotion_api.elements.abstract_element import AbstractElement
+    _, material = _material()
+    material.properties['coefficient'] = 3
+
+    def save_and_reload(self, load_after_save=False):
+        if load_after_save:                     # what the reload reads: the stored link value
+            self._properties['coefficient'] = 1
+    monkeypatch.setattr(AbstractElement, 'save', save_and_reload)
+    material.split()
+    assert material.properties['coefficient'] == 3
 
 
 def test_a_saved_samples_short_label_cannot_be_changed():

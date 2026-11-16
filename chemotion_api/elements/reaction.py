@@ -105,9 +105,12 @@ class MaterialList(TypedList):
         """
         element.reaction = self._reaction
         element.role_in_reaction = self._mat_type
-        element.properties['position'] = len(self)
-        # Set by the client, not the caller: not a change that only reaction.save() would keep.
+        # Set by the client, and before the sample is in the list.
+        with element._internal_link_write():
+            element.properties['position'] = len(self)
+        # Not a change of the caller's that only reaction.save() would keep.
         element._pending_link_fields.discard('position')
+        element._link_baseline.pop('position', None)
 
     def after_append(self, element: Sample):
         """
@@ -1406,7 +1409,7 @@ class Reaction(AbstractElement):
         result = super().save(load_after_save)
         # The materials' link fields went out with the reaction.
         for material in materials:
-            material._pending_link_fields.clear()
+            material._clear_pending_link_fields()
         return result
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
