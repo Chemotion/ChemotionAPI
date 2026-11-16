@@ -89,7 +89,7 @@ read these as success. The connection now checks every JSON reply and raises
 It is a `ConnectionError` and a `ValueError` as well, so existing handlers keep catching it. Empty
 values (`{"error": 0}`, `{"errors": []}`) count as success.
 
-### Fixed: five results that were wrong without an error
+### Fixed: six results that were wrong without an error
 
 - **`ElementSet.page = n` loads page `n`.** It was ignored for any page not yet seen: before the
   first load every page but the first was refused, and the set stayed where it was without a word.
@@ -106,6 +106,11 @@ values (`{"error": 0}`, `{"errors": []}`) count as success.
 - **Image lookup by version picks that version.** Matching by ending let version `1.2` select the
   `eln-1.1.2` image. Versions now match exactly, every page of Docker Hub's tag list is read, and
   the requests time out instead of hanging. With no `eln-` tag at all, it raises `LookupError`.
+- **`Sample.gram`, `mol` and `liter` agree on a missing amount.** `mol` raised `TypeError` on a
+  sample whose amount was never entered, while `gram` answered `None` and `liter` NaN. The three
+  now all answer `None` when there is no amount or it cannot be converted (no molecular weight, no
+  density or molarity). Setting an amount in equivalents when the reference sample has no amount
+  in mol raises `ValueError` instead of `TypeError`.
 
 ### Also
 
