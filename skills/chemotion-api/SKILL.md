@@ -94,7 +94,8 @@ s.properties['description'] = 'Stored at 4 °C'
 s.properties['purity'] = 0.98            # fraction, 0 < purity <= 1 (not percent)
 s.properties['density'] = 0.789          # g/ml; molarity is properties['molarity']['value']
 s.set_amount(2.5, QuantityUnit.Gram)     # preferred way to set an amount
-print(s.gram, s.mol, s.liter)            # converted amount (needs molecular weight / density / molarity)
+print(s.gram, s.mol, s.liter)            # converted amount; None without an amount or when it cannot be
+                                         # converted (mol needs a molecular weight, liter a density/molarity)
 s.save()
 ```
 
@@ -135,6 +136,12 @@ r.save()                                # recomputes equivalents and yields from
 
 The material lists are also `r.properties['starting_materials']` etc. Unknown status values are ignored
 on save, so check spelling.
+
+A sample's place in the reaction (`reference`, `equivalent`, `coefficient`, `position`, `waste`,
+`show_label`, the gas fields) is stored only by `r.save()`. Change it on the reaction's own material
+(`r.starting_materials[0].properties['coefficient'] = 2; r.save()`). On a sample loaded by itself, setting
+such a field raises `ValueError`, and `sample.save()` refuses while such a change is pending.
+A saved sample's `short_label` and a reaction's `rinchi_string` / `rinchi_web_key` cannot be set (`ValueError`).
 
 ### Gas-phase reactions
 
@@ -386,6 +393,12 @@ instance.profile(); instance.set_short_label_counter('samples', 100); instance.c
 - Background jobs (export, import, reports) have no job id; the client waits for the matching
   notification. Re-running one creates a second job.
 - `ValueError` from `save()` usually means a segment value does not fit its field; the message names the field.
+- Changes the ELN would drop without an error are refused with `ValueError`: reaction-link fields
+  (`reference`, `coefficient`, `waste`, ...) saved through `sample.save()` instead of `reaction.save()`, a
+  saved sample's `short_label`, a reaction's RInChI.
 - `requests.exceptions.RequestException` with `401` means the element is not visible to this user.
   Load/save/list failures raise `chemotion_api.connection.ChemotionRequestError` (a `RequestException`;
   `ChemotionServerError` for 5xx) with `status_code`, `url` and `context`, e.g. `saving sample 12`.
+- A refusal the server reports inside a success reply (`{"errors": ...}`, `{"error": ...}`,
+  `{"success": false}`) raises `chemotion_api.connection.ChemotionRejectedError` (also a `ConnectionError`
+  and a `ValueError`): the server's reason is in the message, the decoded reply in `.body`.

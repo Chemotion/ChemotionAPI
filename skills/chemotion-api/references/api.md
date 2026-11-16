@@ -45,7 +45,7 @@ Instance(host_url: str | Connection, verify_ssl: bool = True, username=None, pas
   .get_collection_by_id(collection_id) -> Collection
   .get_collection_of_element(element) -> Collection
   .get_sample(id) / .get_reaction(id) / .get_wellplate(id) / .get_research_plan(id)
-  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for unknown type
+  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for an unknown type or an id of another type
   .get_json_ld_id(element.json_ld['@id']) -> element
   .get_all_types() -> list[str]               # JSON-LD types (IRIs)
   .all_element_classes                        # dict of all element types incl. generic ones
@@ -114,7 +114,7 @@ data is accessed (see SKILL.md). `len(es)` is the total number on the server (se
 Sample listings omit samples that are only reactants or solvents of a reaction (server behavior).
 
 ```
-.page (get/set) / .max_page / .iter_pages() / .next_page() / .prev_page()
+.page (get/set) / .max_page / .iter_pages() / .next_page() / .prev_page()   # setting a missing page: IndexError
 .iter_elements(start_page=1)
 ```
 
@@ -145,7 +145,7 @@ Sample listings omit samples that are only reactants or solvents of a reaction (
 .set_amount(value, unit=None)          # unit: QuantityUnit or 'g'/'mol'/'l'/'Equivalent'
 .get_amount() -> {'value', 'unit'}     # real_amount for products, else target_amount
 .allowed_quantity_units() -> list[QuantityUnit]
-.gram / .mol / .liter                  # converted amount
+.gram / .mol / .liter                  # converted amount; None without an amount or if not convertible
 .equivalent / .reference / .is_mixture
 .reaction / .role_in_reaction          # 'starting_materials' | 'reactants' | 'products' | 'solvents' |
                                        # 'purification_solvents' | None
@@ -169,7 +169,7 @@ Property keys (`sample.properties[...]`):
 | stereo | {'abs': ..., 'rel': ...} | |
 | solvent | SolventList | .add_new_name(name), .add_new_smiles(smiles); entries {label, smiles, inchikey, ratio} |
 | is_top_secret, is_restricted, decoupled, waste, inventory_sample, show_label | bool | |
-| reference | bool | reference material of its reaction |
+| reference | bool | reference material of its reaction; this and the other reaction-link fields (equivalent, coefficient, position, waste, show_label, gas_*) are saved only by reaction.save() |
 | equivalent | float | setting it sets the amount from the reference |
 | coefficient | int | > 0 |
 | user_labels | list | |
@@ -374,12 +374,15 @@ GasType: OFF, GAS, CATALYST, FEEDSTOCK
 | exception | typical cause |
 |---|---|
 | ConnectionError | server unreachable, collection/profile request failed, share failed |
-| PermissionError | login failed |
+| PermissionError | login failed; SciFinder-n token missing or expired |
+| chemotion_api.connection.TokenExpiredError | PermissionError raised before sending: the login token has expired |
 | requests.exceptions.RequestException | element load/save failed; 401 = not visible to this user |
 | chemotion_api.connection.ChemotionRequestError | subclass raised by element load/save/list; .status_code, .url, .context, .snippet |
 | chemotion_api.connection.ChemotionServerError | the same for 5xx (server bug, often triggered by invalid data) |
+| chemotion_api.connection.ChemotionRejectedError | success status, but the body reports a refusal (`{"errors": ...}`, `{"error": ...}`, `{"success": false}`); also ConnectionError and ValueError; .body is the decoded reply |
+| IndexError | `ElementSet.page` set to a page that does not exist |
 | ModuleNotFoundError | collection path does not exist |
-| ValueError | invalid segment value, unit not allowed, unknown generic type/label, unsaved element in url()/open(), SMILES the server cannot resolve ('Mg' instead of '[Mg]') |
+| ValueError | invalid segment value, unit not allowed, unknown generic type/label, generic id of another type, equivalents without a reference amount in mol, unsaved element in url()/open(), SMILES the server cannot resolve ('Mg' instead of '[Mg]'), a change the ELN would drop (reaction-link field via sample.save(), saved sample's short_label, reaction RInChI) |
 | KeyError | sample has no reaction; unknown segment/field name |
 | StopIteration | by_name/by_id/dataset_by_name found nothing |
 | NotImplementedError | quantities of mixtures in variations |
@@ -518,7 +521,7 @@ instance.api_tokens() / .create_api_token(otp, name=None, expires_in_days=30) / 
 instance.set_short_label_counter(type, value) / .set_reaction_short_label(prefix, count)
 instance.text_templates(): .predefined_names() / .predefined(name) / .personal() /
     .create_personal(name, ops) / .update_personal(t) / .delete_personal(t) / .toolbar(type) / .set_toolbar(type, groups)
-instance.scifinder_credential() / .scifinder_search(structure, search_for, structure_type)
+instance.scifinder_credential() / .scifinder_search(structure, search_for, structure_type)   # provider failure: ConnectionError
 instance.simulate_nmr(mol) / .predict_products(smiles) / .predict_reactants(smiles)
 instance.compute_tasks() / .submit_compute_task(sample); ComputeTask.check() / .revoke() / .delete()
 instance.sample_tasks(status) / .create_sample_task(sample, description, n); SampleTask.add_scan_result(...)
