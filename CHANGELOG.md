@@ -27,6 +27,10 @@ The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.1, `312.x.y` ↔ ELN
 - A collection export that times out names the notifications that did arrive, so a change in the
   ELN's wording does not look like a job that never finished. A failed export is recognised by the
   notification's channel, so a collection label that reads like a failure is not taken for one.
+- `Sample.mol` raised `TypeError` on a sample whose amount was never entered, while `gram` answered
+  `None` and `liter` NaN. The three now all answer `None` when there is no amount or it cannot be
+  converted (no molecular weight, no density or molarity). Setting an amount in equivalents when
+  the reference sample has no amount in mol raises `ValueError` instead of `TypeError`.
 
 ### Also
 

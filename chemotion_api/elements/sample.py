@@ -845,50 +845,65 @@ class Sample(AbstractElement):
         return vessel_volume_ml(self.reaction.properties.get('vessel_size'))
 
     @property
-    def gram(self) -> float:
+    def gram(self) -> float | None:
         """
         The amount of the sample in gram. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Gram)
 
     @property
-    def mol(self) -> float:
+    def mol(self) -> float | None:
         """
         The amount of the sample in mol. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted (no molecular weight).
         """
         return self._get_converted_amount(QuantityUnit.Mole)
 
     @property
-    def liter(self) -> float:
+    def liter(self) -> float | None:
         """
         The amount of the sample in liter. For products the real amount is used, otherwise the target amount.
-        Needs a density or molarity unless the amount is given in liter.
+        Needs a density or molarity unless the amount is given in liter; ``None`` when no amount
+        is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Liter)
 
-    def _get_converted_amount(self, output_unit):
-        """Converts the sample's target/real amount into ``output_unit`` using its physical data."""
+    def _get_converted_amount(self, output_unit) -> float | None:
+        """Converts the sample's target/real amount into ``output_unit`` using its physical data.
+
+        ``None`` when the amount has no value (a sample whose amount was never entered) or when the
+        conversion is not possible, so the three unit properties agree: before, ``gram`` passed the
+        missing value through, ``mol`` raised ``TypeError`` on it, and ``liter`` answered ``NaN``.
+        """
         key = 'real_amount' if self.role_in_reaction == 'products' else 'target_amount'
+        value = self.properties[key]['value']
+        if value is None:
+            return None
         gp: GasPhaseObj = self.properties.get('gas_phase_data')
         if gp is not None:
             gas_attres = {'temperature_in_k': gp.temperature_in_k, 'ppm': gp.ppm, 'time_in_h': gp.time_in_h}
 
         else:
             gas_attres = {}
-        return calculate_quantity(
-            current_value=self.properties[key]['value'],
-            current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
-            output_unit=output_unit,
-            molecular_weight=self.molecule['molecular_weight'],
-            purity=self.properties['purity'],
-            molarity=self.properties['molarity']['value'],
-            density=self.properties['density'],
-            # The getter already reports OFF for a sample outside any reaction, so a detached
-            # sample never feeds a `None` vessel size into the gas arithmetic.
-            gas_type=self.gas_type,
-            vessel_size=self.vessel_size,
-            **gas_attres
-        )
+        try:
+            converted = calculate_quantity(
+                current_value=value,
+                current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
+                output_unit=output_unit,
+                molecular_weight=self.molecule['molecular_weight'],
+                purity=self.properties['purity'],
+                molarity=self.properties['molarity']['value'],
+                density=self.properties['density'],
+                # The getter already reports OFF for a sample outside any reaction, so a detached
+                # sample never feeds a `None` vessel size into the gas arithmetic.
+                gas_type=self.gas_type,
+                vessel_size=self.vessel_size,
+                **gas_attres
+            )
+        except KeyError:  # the conversion needs a molecular weight the molecule does not have
+            return None
+        return None if converted != converted else converted  # NaN: not convertible
 
     @property
     def equivalent(self) -> float:
@@ -1462,7 +1477,11 @@ class Sample(AbstractElement):
                 raise KeyError(
                     f'The value {unit.value}  cannot be set for this sample. This is most likely due to the role of this sample in the reaction.')
             self._properties['equivalent'] = value
-            self.set_amount(self.reaction.reference_sample.mol * value, QuantityUnit.Mole)
+            ref_mol = self.reaction.reference_sample.mol
+            if ref_mol is None:
+                raise ValueError('The equivalent cannot be set: the reference sample has no amount in mol '
+                                 '(no amount entered, or no molecular weight to convert it).')
+            self.set_amount(ref_mol * value, QuantityUnit.Mole)
         elif self.properties['reference']:
             self._properties['equivalent'] = 1
         else:
