@@ -9,7 +9,8 @@ The amount of a sample is set with :meth:`chemotion_api.elements.sample.Sample.s
 (see :meth:`chemotion_api.elements.sample.Sample.allowed_quantity_units`). If the sample is part of a reaction,
 this updates the equivalents of all reaction materials. The converted amount is available as
 :attr:`chemotion_api.elements.sample.Sample.gram`, :attr:`chemotion_api.elements.sample.Sample.mol` and
-:attr:`chemotion_api.elements.sample.Sample.liter`.
+:attr:`chemotion_api.elements.sample.Sample.liter`; each is ``None`` when the sample has no amount or it
+cannot be converted (mol needs a molecular weight, liter a density or molarity).
 
 .. code-block:: python
 
