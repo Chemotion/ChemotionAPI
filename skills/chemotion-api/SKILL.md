@@ -93,7 +93,8 @@ s.properties['description'] = 'Stored at 4 °C'
 s.properties['purity'] = 0.98            # fraction, 0 < purity <= 1 (not percent)
 s.properties['density'] = 0.789          # g/ml; molarity is properties['molarity']['value']
 s.set_amount(2.5, QuantityUnit.Gram)     # preferred way to set an amount
-print(s.gram, s.mol, s.liter)            # converted amount (needs molecular weight / density / molarity)
+print(s.gram, s.mol, s.liter)            # converted amount; None without an amount or when it cannot be
+                                         # converted (mol needs a molecular weight, liter a density/molarity)
 s.save()
 ```
 
@@ -294,3 +295,6 @@ dest.remove_elements(sample)                # stays in 'All'; nothing is deleted
 - `requests.exceptions.RequestException` with `401` means the element is not visible to this user.
   Load/save/list failures raise `chemotion_api.connection.ChemotionRequestError` (a `RequestException`;
   `ChemotionServerError` for 5xx) with `status_code`, `url` and `context`, e.g. `saving sample 12`.
+- A refusal the server reports inside a success reply (`{"errors": ...}`, `{"error": ...}`,
+  `{"success": false}`) raises `chemotion_api.connection.ChemotionRejectedError` (also a `ConnectionError`
+  and a `ValueError`): the server's reason is in the message, the decoded reply in `.body`.
