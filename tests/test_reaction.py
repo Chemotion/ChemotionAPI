@@ -1,5 +1,4 @@
 import json
-from math import isnan
 
 import pytest
 
@@ -238,9 +237,9 @@ def test_extended_reaction_amount(instance_with_test_reaction: dict):
                                                                                                             200, 0]
     assert [mat.gram for mat in mats] == [1703.052, 3406.104, 0]
 
-    assert isnan(reaction.starting_materials[0].liter)
+    assert reaction.starting_materials[0].liter is None
     assert reaction.reactants[0].liter == 1.703052
-    assert isnan(reaction.products[0].liter)
+    assert reaction.products[0].liter is None
 
     # Nothing is flagged as the reference, so there is nothing for an equivalent to be relative
     # to. This read [0.5, 1, 0] only because the getter silently picked the last candidate — the
@@ -261,9 +260,9 @@ def test_extended_reaction_amount(instance_with_test_reaction: dict):
     assert [mat.gram for mat in [*reaction.starting_materials, *reaction.reactants, *reaction.products]] == [
         1703.052, 3406.104, 1000]
 
-    assert isnan(reaction.starting_materials[0].liter)
+    assert reaction.starting_materials[0].liter is None
     assert reaction.reactants[0].liter == 1.703052
-    assert isnan(reaction.products[0].liter)
+    assert reaction.products[0].liter is None
 
     assert [mat.properties['equivalent'] for mat in
             [*reaction.starting_materials, *reaction.reactants, *reaction.products]] == [1, 2.0,

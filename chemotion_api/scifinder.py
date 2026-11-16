@@ -62,5 +62,8 @@ def search(session: Connection, structure: str, search_for: str = 'substances', 
     errors = data.get('errors') if isinstance(data, dict) else None
     if errors:
         message = '; '.join(errors)
-        raise (PermissionError if 'token' in message.lower() else ConnectionError)(message)
+        # The ELN appends "try to get the token again" to every provider error, so only its
+        # missing-token wording means a credential problem.
+        missing_token = 'token missing or expired' in message.lower()
+        raise (PermissionError if missing_token else ConnectionError)(message)
     return data

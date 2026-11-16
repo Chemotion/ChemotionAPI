@@ -3,9 +3,16 @@
   "type": "wellplate",
   "name": "New Wellplate",
   "size": 96,
-  "description": { "ops": [{ "insert": "\n" }] },
+  "description": {
+    "ops": [
+      {
+        "insert": "\n"
+      }
+    ]
+  },
   "wells": [],
   "readout_titles": [],
   "segments": [],
-  "attachments": []
+  "attachments": [],
+  "user_labels": []
 }

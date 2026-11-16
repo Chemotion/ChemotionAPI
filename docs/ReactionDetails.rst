@@ -8,6 +8,10 @@ adds a split of it, adding it to the products adds a copy.
 reaction, role and position of the sample are set and its amount is initialized. Saving the reaction recomputes the
 equivalents (and the yields of the products) from the amounts and the reference material.
 
+A sample's place in the reaction (reference, coefficient, waste and so on) is saved with the reaction;
+see :doc:`SampleDetails`. ``rinchi_string`` and ``rinchi_web_key`` are computed by the ELN and cannot
+be set.
+
 .. autoclass:: chemotion_api.elements.reaction.Reaction
     :members:
 

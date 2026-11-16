@@ -555,6 +555,9 @@ class AbstractElement:
                  id: int | None = None, element_type: str | None = None, avoid_load: bool = False):
         # Elements from a listing or search are only partially loaded; they load fully on first data access
         self._is_partial = False
+        # Like `_is_partial`, but kept until a load succeeds: `load()` clears `_is_partial` before
+        # its request, so after a failed load only this still says the data came from a listing.
+        self._listed_unloaded = False
         self._attachments: Attachments | None = None
         self._generic_segments = generic_segments
         self._session = session
@@ -685,6 +688,16 @@ class AbstractElement:
         self._ensure_loaded()
         return PropertyDict(self.on_properties_change, self._properties)
 
+    def _require_loaded(self) -> None:
+        """Like :meth:`_ensure_loaded`, but for an element from a listing a failed load raises
+        instead of handing out the listing's incomplete data, as analyses, segments and attachments
+        did before. An element built from a parent's payload carries its data already, so a failed
+        fetch of its own record (e.g. one you may not read) is not an error."""
+        self._ensure_loaded()
+        if self._listed_unloaded and self._load_failed and not self._data_loaded:
+            raise ConnectionError(f'The full record of {self.element_type} {self.id} could not be '
+                                  f'loaded; fetch the element again.')
+
     def _ensure_loaded(self) -> None:
         """Fetch the element's full record if only the list payload has been seen so far.
 
@@ -765,7 +778,7 @@ class AbstractElement:
 
         :return: Analyses object
         """
-        self._load_if_partial()
+        self._require_loaded()
         return cast(AnalysesList, self._analyses)
 
     @property
@@ -777,7 +790,7 @@ class AbstractElement:
 
         :return: Segment object
         """
-        self._load_if_partial()
+        self._require_loaded()
         return cast(Segment, self._segments)
 
     @property
@@ -787,7 +800,13 @@ class AbstractElement:
  
         :return: Attachments container
         """
-        self._load_if_partial()
+        # Loads first, like `properties`: a file queued on an element that is not fully loaded yet
+        # would otherwise be dropped when the load replaces the container.
+        self._require_loaded()
+        return self._attachment_container()
+
+    def _attachment_container(self) -> Attachments:
+        """The attachments container without loading the element (for use while parsing)."""
         if self._attachments is None:
             attachments_data = cast(dict, self.json_data).get('attachments')
             if attachments_data is None:
@@ -881,6 +900,7 @@ class AbstractElement:
         try:
             attachments_data, json_data = self._load_data_from_server()
             self._load_failed = False
+            self._listed_unloaded = False
             if attachments_data is not None:
                 self._attachments = Attachments(self._session, attachments_data)
             self._set_json_data(json_data)
@@ -895,6 +915,7 @@ class AbstractElement:
         uses the incomplete data. Used by :class:`chemotion_api.elements.ElementSet`.
         """
         self._is_partial = not self.is_new
+        self._listed_unloaded = self._is_partial
 
     def _load_if_partial(self):
         if self._is_partial:
@@ -974,8 +995,9 @@ class AbstractElement:
         # issued a full `load()` for every element constructed from a *listing* row — a 50-row
         # page cost 51 requests, and a transient failure left `_load_failed` on an element that
         # had merely been listed. Loading stays lazy: the first real property read triggers it.
-        add_to_dict(self.segments, 'Properties', PropertyDict(self.on_properties_change, self._properties_data))
-        add_to_dict(self.segments, 'Analyses', self.analyses)
+        # The same holds for the segments and analyses getters, which load too.
+        add_to_dict(self._segments, 'Properties', PropertyDict(self.on_properties_change, self._properties_data))
+        add_to_dict(self._segments, 'Analyses', self._analyses)
 
     def _on_add_segment(self, key: str, segment_data: dict) -> dict:
         temp_segment = parse_generic_object_json(segment_data)

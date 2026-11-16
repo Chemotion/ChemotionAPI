@@ -40,11 +40,11 @@ def _reaction(starting_materials, reactants=()):
 def test_standalone_sample_properties():
     sample = _sample()
     sample.properties['purity'] = 0.5
-    sample.properties['coefficient'] = 2
-    sample.properties['reference'] = True
     sample.properties['real_amount']['value'] = 3.7
-    assert (sample.properties['purity'], sample.properties['coefficient']) == (0.5, 2)
-    assert sample.properties['reference'] is True
+    assert sample.properties['purity'] == 0.5
+    # Its place in a reaction is the reaction's to change (see test_dropped_fields.py)
+    with pytest.raises(ValueError, match='reaction'):
+        sample.properties['coefficient'] = 2
     # A standalone sample keeps target and real amount independent
     assert sample.properties['real_amount']['value'] == 3.7
     assert sample.properties['target_amount']['value'] == 0
@@ -510,3 +510,38 @@ def test_a_bare_vessel_size_may_be_a_numeric_string(raw):
     reaction = _reaction([])
     reaction.properties['vessel_size'] = raw
     assert reaction.properties['vessel_size'] == {'amount': 200.0, 'unit': 'ml'}
+
+
+# --- gram / mol / liter agree on a missing or unconvertible amount -----------------------
+
+def test_a_sample_without_an_amount_has_no_converted_amount():
+    # `mol` used to raise TypeError here, while `gram` answered None and `liter` NaN
+    sample = _sample(target_amount_value=None)
+    assert (sample.gram, sample.mol, sample.liter) == (None, None, None)
+
+
+def test_mol_without_a_molecular_weight_is_none():
+    sample = _sample(mw=None, target_amount_value=1.0)
+    assert sample.gram == 1.0
+    assert sample.mol is None
+
+
+def test_liter_without_density_or_molarity_is_none():
+    sample = _sample(target_amount_value=1.0)
+    assert sample.liter is None
+
+
+def test_converted_amounts_still_computed():
+    sample = _sample(target_amount_value=1.0)
+    assert (sample.gram, sample.mol) == (1.0, pytest.approx(0.01))
+
+
+def test_equivalent_without_a_reference_mol_is_a_clear_error():
+    ref, reactant = _sample(1, reference=True, mw=None), _sample(2)  # 1 g of an unknown weight: no mol
+    reaction = _reaction([ref], [reactant])
+    ref.properties['target_amount']['value'] = 1.0
+    assert reaction.reference_sample is ref and ref.mol is None
+    before = reactant.properties['equivalent']
+    with pytest.raises(ValueError, match='reference sample has no amount'):
+        reactant.set_amount(0.5, QuantityUnit.Equivalent)
+    assert reactant.properties['equivalent'] == before   # the refused value is not kept

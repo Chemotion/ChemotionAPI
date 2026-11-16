@@ -9,7 +9,8 @@ The amount of a sample is set with :meth:`chemotion_api.elements.sample.Sample.s
 (see :meth:`chemotion_api.elements.sample.Sample.allowed_quantity_units`). If the sample is part of a reaction,
 this updates the equivalents of all reaction materials. The converted amount is available as
 :attr:`chemotion_api.elements.sample.Sample.gram`, :attr:`chemotion_api.elements.sample.Sample.mol` and
-:attr:`chemotion_api.elements.sample.Sample.liter`.
+:attr:`chemotion_api.elements.sample.Sample.liter`; each is ``None`` when the sample has no amount or it
+cannot be converted (mol needs a molecular weight, liter a density or molarity).
 
 .. code-block:: python
 
@@ -44,6 +45,22 @@ this updates the equivalents of all reaction materials. The converted amount is 
 .. autoenum:: chemotion_api.elements.utils.QuantityUnit
 
 .. autoenum:: chemotion_api.elements.utils.GasType
+
+Saving a sample that is part of a reaction
+------------------------------------------
+
+A sample's place in a reaction (``reference``, ``equivalent``, ``coefficient``, ``position``,
+``waste``, ``show_label`` and the gas fields) is stored with the reaction, not with the sample. After
+changing one of these, save the reaction: ``sample.save()`` raises ``ValueError``, because the ELN
+would discard the change without an error.
+
+.. code-block:: python
+
+    reaction = instance.get_reaction(1)
+    reaction.starting_materials[0].properties['coefficient'] = 2
+    reaction.save()
+
+A saved sample's ``short_label`` cannot be changed; the ELN assigns it and ignores changes to it.
 
 Chemical inventory and safety data
 ----------------------------------

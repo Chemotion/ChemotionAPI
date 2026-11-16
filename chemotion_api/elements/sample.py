@@ -4,9 +4,11 @@ Defines the :class:`Sample` element together with its molecule, solvent and gas-
 and its quantity/equivalent calculations.
 """
 import json
+import math
 from dataclasses import dataclass
 import logging
 import re
+import contextlib
 import copy
 import warnings
 from enum import Enum
@@ -579,6 +581,24 @@ class MoleculeManager:
         return float(res.json())
 
 
+#: A sample's link to a reaction (the ELN's reactions_samples). The reaction's payload carries these;
+#: the sample routes do not store them, so they are saved only with the reaction.
+_REACTION_LINK_FIELDS = ('reference', 'equivalent', 'coefficient', 'position', 'show_label', 'waste',
+                         'gas_type', 'gas_phase_data', 'conversion_rate',
+                         'weight_percentage_reference', 'weight_percentage')
+
+
+def _comparable(value):
+    """A link field's value in a form that compares by content (enums by value, objects as dicts)."""
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, 'to_dict'):
+        return value.to_dict()
+    if hasattr(value, 'model_dump'):
+        return value.model_dump()
+    return copy.deepcopy(value)
+
+
 @register_element_type('sample', url='/api/v1/samples')
 class Sample(AbstractElement):
     """
@@ -623,6 +643,12 @@ class Sample(AbstractElement):
         self._reaction = None
         self._role_in_reaction = None
         self._is_solvent = kwargs.pop("is_solvent", False)
+        # Reaction-link fields changed through `properties` since the reaction last saved them,
+        # and the value each had before its first change (to see a change being undone).
+        self._pending_link_set: set[str] = set()
+        self._link_baseline: dict[str, Any] = {}
+        # Set while the client itself writes a link field (see `_internal_link_write`).
+        self._internal_link_writes = 0
         super().__init__(*args, **kwargs)
 
     def _set_json_data(self, json_data):
@@ -791,7 +817,7 @@ class Sample(AbstractElement):
         """
         The molecule of the sample
         """
-        self._load_if_partial()
+        self._require_loaded()
         if self._molecule is None:
             return Molecule({})
         return self._molecule
@@ -838,50 +864,65 @@ class Sample(AbstractElement):
         return vessel_volume_ml(self.reaction.properties.get('vessel_size'))
 
     @property
-    def gram(self) -> float:
+    def gram(self) -> float | None:
         """
         The amount of the sample in gram. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Gram)
 
     @property
-    def mol(self) -> float:
+    def mol(self) -> float | None:
         """
         The amount of the sample in mol. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted (no molecular weight).
         """
         return self._get_converted_amount(QuantityUnit.Mole)
 
     @property
-    def liter(self) -> float:
+    def liter(self) -> float | None:
         """
         The amount of the sample in liter. For products the real amount is used, otherwise the target amount.
-        Needs a density or molarity unless the amount is given in liter.
+        Needs a density or molarity unless the amount is given in liter; ``None`` when no amount
+        is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Liter)
 
-    def _get_converted_amount(self, output_unit):
-        """Converts the sample's target/real amount into ``output_unit`` using its physical data."""
+    def _get_converted_amount(self, output_unit) -> float | None:
+        """Converts the sample's target/real amount into ``output_unit`` using its physical data.
+
+        ``None`` when the amount has no value (a sample whose amount was never entered) or when the
+        conversion is not possible, so the three unit properties agree: before, ``gram`` passed the
+        missing value through, ``mol`` raised ``TypeError`` on it, and ``liter`` answered ``NaN``.
+        """
         key = 'real_amount' if self.role_in_reaction == 'products' else 'target_amount'
+        value = self.properties[key]['value']
+        if value is None:
+            return None
         gp: GasPhaseObj = self.properties.get('gas_phase_data')
         if gp is not None:
             gas_attres = {'temperature_in_k': gp.temperature_in_k, 'ppm': gp.ppm, 'time_in_h': gp.time_in_h}
 
         else:
             gas_attres = {}
-        return calculate_quantity(
-            current_value=self.properties[key]['value'],
-            current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
-            output_unit=output_unit,
-            molecular_weight=self.molecule['molecular_weight'],
-            purity=self.properties['purity'],
-            molarity=self.properties['molarity']['value'],
-            density=self.properties['density'],
-            # The getter already reports OFF for a sample outside any reaction, so a detached
-            # sample never feeds a `None` vessel size into the gas arithmetic.
-            gas_type=self.gas_type,
-            vessel_size=self.vessel_size,
-            **gas_attres
-        )
+        try:
+            converted = calculate_quantity(
+                current_value=value,
+                current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
+                output_unit=output_unit,
+                molecular_weight=self.molecule['molecular_weight'],
+                purity=self.properties['purity'],
+                molarity=self.properties['molarity']['value'],
+                density=self.properties['density'],
+                # The getter already reports OFF for a sample outside any reaction, so a detached
+                # sample never feeds a `None` vessel size into the gas arithmetic.
+                gas_type=self.gas_type,
+                vessel_size=self.vessel_size,
+                **gas_attres
+            )
+        except KeyError:  # the conversion needs a molecular weight the molecule does not have
+            return None
+        return None if math.isnan(converted) else converted  # NaN: not convertible
 
     @property
     def equivalent(self) -> float:
@@ -1006,7 +1047,8 @@ class Sample(AbstractElement):
         origin_gas_type = self.gas_type
         self._properties['gas_type'] = gas_type
         if has_change and gas_type == GasType.GAS:
-            self.properties['gas_phase_data'] = GasPhaseObj(self)
+            with self._internal_link_write():
+                self.properties['gas_phase_data'] = GasPhaseObj(self)
         if has_change and origin_gas_type == GasType.FEEDSTOCK:
             cat_sample = self.reaction.get_catalyst()
             if cat_sample is not None:
@@ -1096,7 +1138,9 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save(True)
+        # The sample's own fields only: link fields still pending belong to its current reaction,
+        # which saves them; the subsample gets its own place in the reaction it joins.
+        self._save_own_fields(True)
         split_sample = copy.deepcopy(self.json_data)
         split_sample['parent_id'] = self.id
         split_sample['id'] = None
@@ -1122,7 +1166,7 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save()
+        self._save_own_fields()
         split_sample = copy.deepcopy(self.json_data)
         split_sample['id'] = None
 
@@ -1454,8 +1498,14 @@ class Sample(AbstractElement):
             if unit not in self.allowed_quantity_units():
                 raise KeyError(
                     f'The value {unit.value}  cannot be set for this sample. This is most likely due to the role of this sample in the reaction.')
+            ref_mol = self.reaction.reference_sample.mol
+            if ref_mol is None:
+                # Checked before the write, so a refused equivalent does not stay on the sample
+                # next to its old amount.
+                raise ValueError('The equivalent cannot be set: the reference sample has no amount in mol '
+                                 '(no amount entered, or no molecular weight to convert it).')
             self._properties['equivalent'] = value
-            self.set_amount(self.reaction.reference_sample.mol * value, QuantityUnit.Mole)
+            self.set_amount(ref_mol * value, QuantityUnit.Mole)
         elif self.properties['reference']:
             self._properties['equivalent'] = 1
         else:
@@ -1555,7 +1605,89 @@ class Sample(AbstractElement):
                     # meant nobody found out until the numbers were wrong on the server.
                     logger.warning('The equivalents of the reaction could not be updated: %r', e)
 
+    @property
+    def _pending_link_fields(self) -> set[str]:
+        """Reaction-link fields written through ``properties`` since the last reaction save."""
+        return self._pending_link_set
+
+    def _clear_pending_link_fields(self) -> None:
+        """The reaction saved this material's link fields: nothing is pending any more."""
+        self._pending_link_set.clear()
+        self._link_baseline.clear()
+
+    @contextlib.contextmanager
+    def _internal_link_write(self):
+        """A link field the client sets itself (a material's position, the gas data of a gas),
+        also while the sample is not yet one of its reaction's materials."""
+        self._internal_link_writes += 1
+        try:
+            yield
+        finally:
+            self._internal_link_writes -= 1
+
+    def _is_own_material(self) -> bool:
+        """Whether this object is one of its reaction's materials, the objects ``reaction.save()``
+        serialises. Not true of a sample loaded on its own, nor through :attr:`reaction`, which
+        builds a new reaction holding other material objects."""
+        reaction = self._reaction
+        materials = getattr(reaction, '_properties_data', None) or {}
+        return any(m is self for role in self.material_types for m in (materials.get(role) or []))
+
+    def save(self, load_after_save: bool = False):
+        """Save the sample.
+
+        :raises ValueError: if a field of the sample's place in a reaction (``equivalent``,
+            ``reference``, ``coefficient``, …) was changed: the sample routes do not store those, so
+            the change would be lost without an error. Save the reaction instead.
+        """
+        if self._pending_link_fields:
+            raise ValueError(
+                f'{", ".join(sorted(self._pending_link_fields))} belong to this sample\'s place in a '
+                f'reaction and are saved with the reaction: call reaction.save(), not sample.save().')
+        self._save_own_fields(load_after_save)
+
+    def _save_own_fields(self, load_after_save: bool = False) -> None:
+        """Save the sample's own fields. Pending link fields are not saved here (the sample routes
+        do not store them) and stay pending, with their values, for the reaction's save."""
+        pending = {field: self._properties.get(field) for field in self._pending_link_fields}
+        was_new = self.is_new
+        metrics = self.properties.get('metrics') if was_new else None
+        # Reload only after the last request, not after the create and again after the update.
+        super().save(load_after_save and not metrics)
+        if metrics and metrics != self.json_data.get('metrics'):
+            # The create route does not take `metrics` (the update route does), so a new sample
+            # would silently get the default display units.
+            self.properties['metrics'] = metrics
+            super().save(load_after_save)
+        elif metrics and load_after_save:
+            self.load()
+        if load_after_save and pending:
+            # The reload read the stored link values; the changes are still to be saved.
+            self._properties.update(pending)
+
     def on_properties_change(self, dict_obj, name, value):
+        """Apply a property change. A reaction-link field may only be changed on one of its
+        reaction's materials, where ``reaction.save()`` stores it; it is pending until then, unless
+        it is set back to the value it had."""
+        field = name[0]
+        if field not in _REACTION_LINK_FIELDS:
+            return self._apply_property_change(dict_obj, name, value)
+        if not self._internal_link_writes and not self._is_own_material():
+            raise ValueError(
+                f'{field!r} belongs to this sample\'s place in a reaction, which only the reaction '
+                f'saves. Change it on the reaction\'s material (e.g. reaction.starting_materials[i]) '
+                f'and call reaction.save().')
+        before = _comparable(self._properties.get(field))
+        result = self._apply_property_change(dict_obj, name, value)
+        baseline = self._link_baseline.setdefault(field, before)
+        if _comparable(self._properties.get(field)) == baseline:
+            self._pending_link_set.discard(field)
+            del self._link_baseline[field]
+        else:
+            self._pending_link_set.add(field)
+        return result
+
+    def _apply_property_change(self, dict_obj, name, value):
         """
         Validates and applies a change to one of the sample's properties.
 
@@ -1569,9 +1701,13 @@ class Sample(AbstractElement):
         :return: ``False``, as the handler applies the change itself
         :raises ValueError: If the new value violates a constraint (e.g. purity or coefficient range)
         """
+        # Fields the sample routes do not store (they are dropped without an error), checked
+        # against ELN v4.0.1's declared parameters (2026-11-14).
+        top = name[0]
+        if top == 'short_label' and not self.is_new:
+            raise ValueError("A saved sample's short label cannot be changed: the ELN ignores it on update.")
         # Only the field being written is copied and validated (see `validate_field`). A whole
         # field is the new value outright; a nested write is applied to a copy of that one field.
-        top = name[0]
         proposed = proposed_field(self._properties.get(top), name, value[-1])
         coerced_val = value_at(validate_field(SamplePropertiesModel, top, proposed), name[1:])
 

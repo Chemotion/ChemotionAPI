@@ -8,36 +8,18 @@ Messages are only read here, never acknowledged, so they still appear in the ELN
 import os
 import re
 import tempfile
-import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from chemotion_api.connection import Connection, request_error
+from chemotion_api.notifications import message_text, notification_ids, notifications, subject_of, wait_for_notification
 
 SUBJECT_OK = 'Collection Import and Export'
 SUBJECT_FAIL = 'Collection Import and Export Failure'
 _ZIP_PATH = re.compile(r'/zip/[\w-]+\.zip')
 
 
-def message_ids(session: Connection) -> set:
-    return {str(m.get('id')) for m in _messages(session)}
-
-
-def _messages(session: Connection) -> list[dict]:
-    res = session.get('/api/v1/messages/list', params={'is_ack': 9})
-    if res.status_code != 200:
-        raise request_error(res, 'reading notifications')
-    return (res.json() or {}).get('messages') or []
-
-
-def new_messages(session: Connection, seen: set) -> list[dict]:
-    return [m for m in _messages(session) if str(m.get('id')) not in seen
-            and m.get('subject') in (SUBJECT_OK, SUBJECT_FAIL)]
-
-
-def _text(message: dict) -> str:
-    content = message.get('content') or {}
-    return str(content.get('data') or '') if isinstance(content, dict) else str(content)
+_SUBJECTS = (SUBJECT_OK, SUBJECT_FAIL)
 
 
 def _ruby_inspect(text: str) -> str:
@@ -68,7 +50,7 @@ def export_collection_zip(session: Connection, collection_id: int, label: str, d
     :raises ConnectionError: if the server reports the export failed or links somewhere unexpected.
     :raises TimeoutError: if no archive is announced within ``timeout`` seconds.
     """
-    seen = message_ids(session)
+    seen = notification_ids(session, _SUBJECTS)
     res = session.post('/api/v1/collections/export', data={'collection_ids': [collection_id]})
     if res.status_code == 401:
         raise PermissionError(
@@ -77,23 +59,19 @@ def export_collection_zip(session: Connection, collection_id: int, label: str, d
     if res.status_code not in (200, 201, 204):
         raise request_error(res, f'exporting collection {collection_id}')
 
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        for message in new_messages(session, seen):
-            text = _text(message)
-            if not _is_export_of(text, label):
-                continue
-            if message.get('subject') == SUBJECT_FAIL:
-                raise ConnectionError(f'The server could not export collection {collection_id}: {text}')
-            content = message.get('content') or {}
-            # The link's host is the server's configured root URL, which need not be the address
-            # we connect to; only the path is used, and only the shape the export job produces.
-            path = urlsplit(str(content.get('url') or '')).path
-            if not _ZIP_PATH.fullmatch(path):
-                raise ConnectionError(f'Unexpected export download link: {content.get("url")!r}')
-            return _download(session, path, Path(destination))
-        time.sleep(poll_interval)
-    raise TimeoutError(f'No export archive for collection {collection_id} within {timeout:.0f} s.')
+    message = wait_for_notification(session, _SUBJECTS, seen, f'The export of collection {label!r}',
+                                    match=lambda m: _is_export_of(message_text(m), label),
+                                    timeout=timeout, poll_interval=poll_interval)
+    text = message_text(message)
+    if subject_of(message) == SUBJECT_FAIL:
+        raise ConnectionError(f'The server could not export collection {collection_id}: {text}')
+    content = message.get('content') or {}
+    # The link's host is the server's configured root URL, which need not be the address we
+    # connect to; only the path is used, and only the shape the export job produces.
+    path = urlsplit(str(content.get('url') or '')).path
+    if not _ZIP_PATH.fullmatch(path):
+        raise ConnectionError(f'Unexpected export download link: {content.get("url")!r}')
+    return _download(session, path, Path(destination))
 
 
 def _download(session: Connection, path: str, destination: Path) -> Path:
@@ -119,7 +97,7 @@ def import_collection_zip(session: Connection, path) -> None:
     :raises PermissionError: on 401.
     :raises ValueError: if the server reports the import failed.
     """
-    seen = message_ids(session)
+    seen = notification_ids(session, _SUBJECTS)
     path = Path(path)
     with path.open('rb') as fh:
         res = session.post('/api/v1/collections/import',
@@ -130,6 +108,8 @@ def import_collection_zip(session: Connection, path) -> None:
         raise ValueError(f'{path.name} is larger than the server accepts.')
     if res.status_code not in (200, 201, 204):
         raise request_error(res, f'importing {path.name}')
-    for message in new_messages(session, seen):
-        if message.get('subject') == SUBJECT_FAIL and 'import' in _text(message).lower():
-            raise ValueError(f'The server could not import {path.name}: {_text(message)}')
+    for message in notifications(session, _SUBJECTS):
+        if message['id'] in seen:
+            continue
+        if subject_of(message) == SUBJECT_FAIL and 'import' in message_text(message).lower():
+            raise ValueError(f'The server could not import {path.name}: {message_text(message)}')
