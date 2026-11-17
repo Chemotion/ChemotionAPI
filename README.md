@@ -14,6 +14,13 @@ workflows that leverage the ELN's capabilities and streamline their research pro
 
 Detaild documentation can be found [here](https://chemotionapi.readthedocs.io/en/main/)
 
+## AI coding assistants
+
+[skills/chemotion-api/](./skills/chemotion-api/SKILL.md) is a skill with the common workflows and a
+signature reference (`references/api.md`). It also ships in the installed package, matching its
+version, at `chemotion_api/skills/chemotion-api/` (find it with
+`python -c "import chemotion_api, pathlib; print(pathlib.Path(chemotion_api.__file__).parent / 'skills')"`).
+
 ## Contributing
 
 Contributions to ChemotionApi are welcome! If you have any bug reports, feature requests, or suggestions, please

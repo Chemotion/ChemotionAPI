@@ -247,7 +247,7 @@ wheels = [
 
 [[package]]
 name = "chemotion-api"
-version = "312.1.0"
+version = "312.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
