@@ -3,6 +3,16 @@
 The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.1, `312.x.y` ↔ ELN 3.1.2,
 `211.x.y` ↔ ELN 2.1.1.
 
+## 401.1.1 — the AI-assistant skill ships in the package
+
+### Changed
+
+- **The skill covers 401.1.0**: refused requests raise `ChemotionRejectedError`, amounts that are
+  missing or cannot be converted answer `None`, and the changes the ELN would drop are refused.
+- **The wheel now contains the skill** at `chemotion_api/skills/chemotion-api/` (`SKILL.md` and
+  `references/api.md`), so an installed package carries the skill that matches its version.
+  No code changes.
+
 ## 401.1.0 — changes the ELN would drop are refused
 
 ### Changed

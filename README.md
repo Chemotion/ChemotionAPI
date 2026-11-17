@@ -135,6 +135,9 @@ just docs    # → docs/_build/html/index.html
 
 For AI coding assistants, [skills/chemotion-api/](./skills/chemotion-api/SKILL.md) is a skill with
 the common workflows and a signature reference (`references/api.md`).
+It also ships in the installed package, matching its version, at
+`chemotion_api/skills/chemotion-api/` (find it with
+`python -c "import chemotion_api, pathlib; print(pathlib.Path(chemotion_api.__file__).parent / 'skills')"`).
 
 ## Testing
 
