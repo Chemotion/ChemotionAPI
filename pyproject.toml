@@ -1,6 +1,6 @@
 [project]
 name = "chemotion-api"
-version = "312.1.0"
+version = "312.1.1"
 description = "A Chemotion python API"
 authors = [{ name = "Martin Starman", email = "martin.starman@kit.edu" }]
 license = { text = "AGPL-3.0-or-later" }
@@ -123,3 +123,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["chemotion_api"]
+
+# The AI-assistant skill ships inside the wheel too, so an installed package carries the skill
+# that matches its version: <site-packages>/chemotion_api/skills/chemotion-api/SKILL.md.
+[tool.hatch.build.targets.wheel.force-include]
+"skills/chemotion-api" = "chemotion_api/skills/chemotion-api"

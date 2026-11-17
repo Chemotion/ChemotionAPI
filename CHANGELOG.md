@@ -3,6 +3,16 @@
 The version scheme tracks the server: `312.x.y` ↔ ELN 3.1.2, `211.x.y` ↔ ELN 2.1.1.
 For an ELN v4 server, use the `4xx` line instead.
 
+## 312.1.1 — the AI-assistant skill ships in the package
+
+### Changed
+
+- **The skill covers 312.1.0**: refused requests raise `ChemotionRejectedError`, amounts that are
+  missing or cannot be converted answer `None`, and `ElementSet.page` raises `IndexError`.
+- **The wheel now contains the skill** at `chemotion_api/skills/chemotion-api/` (`SKILL.md` and
+  `references/api.md`), so an installed package carries the skill that matches its version.
+  No code changes.
+
 ## 🚨 312.1.0 — wrong-type generic elements, and four device methods that never worked
 
 ### Fixed: `get_generic_by_name()` could return an element of the wrong type ([#14])
