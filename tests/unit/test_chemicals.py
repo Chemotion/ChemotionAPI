@@ -1,9 +1,10 @@
-"""Chemical records and inventory labels (M4.5), offline."""
+"""Safety data sheets and inventory labels (M4.5), offline. The record itself: test_sample_inventory."""
 import json
 
 import pytest
 
-from chemotion_api.chemicals import Chemical, find_safety_sheets, inventory_label, load_chemical, save_chemical
+from chemotion_api.chemicals import attach_safety_sheet, find_safety_sheets, inventory_label
+from chemotion_api.elements.sample import Chemical
 
 RECORD = {'id': 7, 'sample_id': 3, 'cas': '64-17-5', 'chemical_data': [
     {'status': 'Available', 'safetySheetPath': [{'E7023_link': '/safety_sheets/Merck/E7023.pdf'}]}],
@@ -36,37 +37,38 @@ class _Session:
         return self._call('put', url, kw)
 
 
-class _El:
-    def __init__(self, kind, eid):
-        self.element_type, self.id = kind, eid
+class _Sample:
+    element_type, id, is_new = 'sample', 3, False
+
+    def __init__(self, session):
+        self._session = session
+
+    def get_chemical(self):
+        return Chemical(self._session, 3, RECORD)
 
 
-def test_load_maps_the_empty_record_to_none():
-    empty = dict.fromkeys(RECORD)
-    session = _Session(_Res(200, empty), _Res(200, RECORD))
-    assert load_chemical(session, _El('sample', 3)) is None
-    chem = load_chemical(session, _El('sample', 3))
-    assert (chem.id, chem.cas, chem.safety_sheets) == (7, '64-17-5', ['/safety_sheets/Merck/E7023.pdf'])
-    assert session.calls[0][2] == {'sample_id': 3}
+def test_safety_sheets_lists_the_stored_paths():
+    assert Chemical(None, 3, RECORD).safety_sheets == ['/safety_sheets/Merck/E7023.pdf']
+    assert Chemical(None, 3, {}).safety_sheets == []
 
 
-def test_create_then_update_and_sbmm_owner():
-    session = _Session(_Res(201, RECORD), _Res(200, RECORD), _Res(200, True), _Res(200, RECORD))
-    save_chemical(session, _El('sample', 3), Chemical(cas='64-17-5', data={'status': 'Available'}))
-    save_chemical(session, _El('sequence_based_macromolecule_sample', 4), Chemical(id=7, data={'status': 'x'}))
-    assert session.calls[0] == ('post', '/api/v1/chemicals/create',
-                                {'sample_id': 3, 'chemical_data': [{'status': 'Available'}], 'cas': '64-17-5'})
-    assert session.calls[2] == ('put', '/api/v1/chemicals',
-                                {'sequence_based_macromolecule_sample_id': 4, 'chemical_data': [{'status': 'x'}]})
+def test_manual_upload_sends_the_form_and_rereads_the_record(tmp_path):
+    pdf = tmp_path / 'sds.pdf'
+    pdf.write_bytes(b'%PDF-1.4')
+    session = _Session(_Res(201, RECORD))
+    chem = attach_safety_sheet(session, _Sample(session), str(pdf), 'Merck', 'merckProductInfo',
+                               {'productNumber': 'E7023'}, cas='64-17-5')
+    assert chem.safety_sheets == ['/safety_sheets/Merck/E7023.pdf']
+    assert session.calls[0][:2] == ('post', '/api/v1/chemicals/save_manual_sds')
+    assert session.calls[0][2]['sample_id'] == 3 and session.calls[0][2]['cas'] == '64-17-5'
 
 
 def test_rejects():
-    with pytest.raises(ValueError, match='Only samples'):
-        load_chemical(_Session(), _El('reaction', 1))
-    with pytest.raises(ValueError, match='CAS'):
-        save_chemical(_Session(), _El('sample', 1), Chemical())
     with pytest.raises(ValueError, match='vendor'):
         find_safety_sheets(_Session(), 'x', vendor='Acme')
+    reaction = type('_R', (), {'element_type': 'reaction', 'id': 1})()
+    with pytest.raises(ValueError, match='samples only'):
+        attach_safety_sheet(_Session(), reaction, 'x.pdf', 'Merck', 'merckProductInfo')
 
 
 def test_vendor_search_params_and_inventory_label():

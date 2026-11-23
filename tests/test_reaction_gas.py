@@ -1,5 +1,3 @@
-from cmath import isnan
-
 import pytest
 
 from chemotion_api import Instance, Reaction
@@ -12,7 +10,7 @@ def instance_with_test_reaction(instance_with_test_samples):
     col = instance_with_test_samples['main_collection']
     sol = col.new_solvent('Acetone')
     sol.set_amount(300, 'l')
-    reactant = i.get_sample(2)
+    reactant = i.get_sample(instance_with_test_samples['sample_ids'][1])   # ammonia
     st_mt = col.new_sample_smiles('N')
     pr_mt = col.new_sample_smiles('NO')
     reaction = col.new_reaction()
@@ -76,7 +74,7 @@ def test_FEEDSTOCK_amount(instance_with_test_reaction):
     reaction.save()
     sm = reaction.starting_materials[0]
     assert int(sm.mol*1000) == 2071
-    assert isnan(sm.gram)
+    assert sm.gram is None
     assert sm.liter == 50
     assert int(sm.equivalent * 10000) == 3527
 

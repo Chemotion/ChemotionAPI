@@ -6,14 +6,19 @@ Chemical inventory and safety data sheets
 
 .. code-block:: python
 
-    from chemotion_api.chemicals import Chemical
-
-    chem = sample.save_chemical(Chemical(cas='64-17-5', data={'status': 'Available'}))
-    sample.attach_safety_sheet('sds.pdf', 'Merck', 'merckProductInfo', {'productNumber': 'E7023'})
+    chem = sample.get_chemical()            # always a Chemical; chem.exists says if it is stored
+    chem.cas = '64-17-5'
+    chem.data['status'] = 'Available'
+    chem.save()
+    chem = sample.attach_safety_sheet('sds.pdf', 'Merck', 'merckProductInfo', {'productNumber': 'E7023'})
+    print(chem.safety_sheets)
     instance.set_inventory_label('CHI', 'Chemicals', 0, collection)
 
+.. autoclass:: chemotion_api.elements.sample.Chemical
+    :members: save, exists, safety_sheets
+    :no-index:
 .. automodule:: chemotion_api.chemicals
-    :members: Chemical, find_safety_sheets, attach_safety_sheet, extract_safety_sheet
+    :members: find_safety_sheets, attach_safety_sheet, extract_safety_sheet
 
 Measurements
 ------------

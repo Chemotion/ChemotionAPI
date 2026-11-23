@@ -21,7 +21,8 @@ from collections.abc import Generator
 
 logger = logging.getLogger(__name__)
 
-from chemotion_api.elements import Wellplate, Sample, Reaction, GenericElement, ResearchPlan, Screen, CellLine, DeviceDescription, SbmmSample
+from chemotion_api.elements import Wellplate, Sample, Reaction, GenericElement, ResearchPlan, Screen, SbmmSample, \
+    CellLine, DeviceDescription
 from chemotion_api.user import Person, Group
 
 from chemotion_api.elements.sample import MoleculeManager
@@ -34,7 +35,7 @@ from chemotion_api.elements import ElementSet, AbstractElement
 from chemotion_api.elements.abstract_element import delete_elements, ui_state_selection
 from chemotion_api.elements.literature import Reference, collection_references
 from chemotion_api import reports, vessels
-from chemotion_api.notifications import notification_ids, server_path, wait_for_notification
+from chemotion_api.notifications import notification_ids, wait_for_notification
 
 TAbstractCollection = TypeVar("TAbstractCollection", bound="AbstractCollection")
 TRootCollection = TypeVar("TRootCollection", bound="RootCollection")
@@ -45,9 +46,10 @@ def _col_path_join(path_part: str, *path_parts: str) -> str:
     # An absolute segment (starting with '/') resets the path to that segment onward.
     for i, x in enumerate(path_parts):
         if x.startswith('/'):
-            if i == 0:
-                return _col_path_join(x)
-            return _col_path_join(x, *path_parts[-i:])
+            # `path_parts[i + 1:]` — everything *after* the absolute segment. It used to take
+            # `path_parts[-i:]` (the last i items, which is a different slice) and, for i == 0,
+            # dropped the tail entirely: join('a', '/b', 'c', 'd') returned '/b'.
+            return _col_path_join(x, *path_parts[i + 1:])
     joined = '/'.join([path_part, *path_parts])
     while '//' in joined:
         joined = joined.replace('//', '/')
@@ -78,63 +80,18 @@ def _share_target_ids(users) -> list[int]:
 SAMPLE_IMPORT_FORMATS = ('.sdf', '.mol', '.csv', '.xlsx')
 #: The channel subject of the import's completion notification.
 IMPORT_SAMPLES_SUBJECT = 'Import Samples Completed'
-#: Channel subjects of the collection export/import notifications (``Channel::COLLECTION_ZIP*``).
-COLLECTION_ZIP_SUBJECT = 'Collection Import and Export'
-COLLECTION_ZIP_FAIL_SUBJECT = 'Collection Import and Export Failure'
 #: Channel subject of ELN-to-ELN transfer notifications (``Channel::GATE_TRANSFER_NOTIFICATION``).
 GATE_TRANSFER_SUBJECT = 'Gate Transfer Completed'
 
 
-def _zip_operation(message: dict) -> str:
-    """``'export'`` or ``'import'``: the notification text reads "Collection Export: …"."""
-    data = str((message.get('content') or {}).get('data') or '')
-    match = re.match(r'\s*Collection (\w+):', data)
-    return match.group(1).lower() if match else ''
+def _child_of(label: str) -> typing.Callable[[dict], bool]:
+    """Matches the list row of a split child of ``label`` (``<label>-<n>``), not of ``<label>0``."""
+    pattern = re.compile(rf'^{re.escape(label)}-\d+$')
+    return lambda row: bool(pattern.match(row.get('short_label') or ''))
 
 
-def export_collections(session: Connection, collections: list, file_path: str, timeout: float = 600,
-                       poll_interval: float = 2) -> str:
-    """Export collections into one ZIP archive, as the UI's *Export collections* dialog does.
-
-    ``POST /api/v1/collections/export`` starts a background job; its notification links the
-    archive, which is then downloaded to ``file_path``. The archive holds the collections' elements
-    with their analyses and attachments, and can be imported again with
-    :meth:`RootCollection.import_collections` (on this or another ELN).
-
-    :return: ``file_path``
-    :raises PermissionError: for a collection you may not export (not yours, or shared with you
-        without full detail access).
-    :raises ConnectionError: if the server reports that the export failed.
-    :raises TimeoutError: if the export does not finish within ``timeout`` seconds.
-    """
-    ids = []
-    for col in collections:
-        if getattr(col, 'id', None) is None:
-            raise ValueError(f'Collection "{getattr(col, "label", col)}" is not saved and cannot be exported.')
-        ids.append(col.id)
-    if not ids:
-        raise ValueError('Select the collections you want to export.')
-    subjects = (COLLECTION_ZIP_SUBJECT, COLLECTION_ZIP_FAIL_SUBJECT)
-    seen = notification_ids(session, subjects)
-    res = session.post('/api/v1/collections/export', data={'collection_ids': ids})
-    if res.status_code == 401:
-        raise PermissionError('You can only export your own collections, or collections shared with '
-                              'you with full detail access.')
-    if res.status_code not in (200, 201):
-        raise ConnectionError(f'{res.status_code} -> {res.text}')
-    labels = ', '.join(f'"{c.label}"' for c in collections)
-    message = wait_for_notification(session, subjects, seen, f'The export of {labels}',
-                                    match=lambda m: _zip_operation(m) == 'export',
-                                    timeout=timeout, poll_interval=poll_interval)
-    content = message.get('content') or {}
-    if message.get('subject') == COLLECTION_ZIP_FAIL_SUBJECT or not content.get('url'):
-        raise ConnectionError(f'The export of {labels} failed: {content.get("data")}')
-    archive = session.get(server_path(content['url']))
-    if archive.status_code != 200:
-        raise ConnectionError(f'Downloading the export archive failed: {archive.status_code} -> {archive.text}')
-    with open(file_path, 'wb') as f:
-        f.write(archive.content)
-    return file_path
+def _named(name: str) -> typing.Callable[[dict], bool]:
+    return lambda row: row.get('name') == name
 
 
 @dataclass(frozen=True)
@@ -156,17 +113,6 @@ class ImportResult:
         content = message.get('content') or {}
         return cls(level=content.get('level') or 'info', message=str(content.get('data') or '').strip(),
                    report_url=content.get('url'))
-
-
-def _label_ids(labels) -> list[int]:
-    """User labels given as :class:`~chemotion_api.user.UserLabel` objects or ids, as ids."""
-    ids = []
-    for label in labels:
-        label_id = label if isinstance(label, int) and not isinstance(label, bool) else getattr(label, 'id', None)
-        if not isinstance(label_id, int):
-            raise ValueError(f'Not a user label or label id: {label!r}')
-        ids.append(label_id)
-    return ids
 
 
 def nest_by_ancestry(flat: list[dict]) -> list[dict]:
@@ -332,6 +278,12 @@ class AbstractCollection:
         The chemotion DB ID
         """
         self._id = id
+
+    @property
+    def parent(self) -> AbstractCollection | None:
+        """The collection this one sits in, or ``None`` for a root. Read-only: move a collection
+        with :meth:`move` (and save the tree)."""
+        return self._parent
 
     @property
     def label(self) -> str | None:
@@ -572,10 +524,11 @@ class AbstractCollection:
             raise Exception("You cannot add a collection to a synced collection!")
         raise NotImplementedError('This collection cannot add a collection')
 
-    #: Element kinds this client will send to `collection_elements`. v4 declares
-    #: sample/reaction/wellplate/screen/research_plan in `main_ui_state_params`, and the usecase
-    #: resolves more besides — but a kind we have not exercised is untested, not supported.
-    _COLLECTION_ELEMENT_KINDS = ('sample', 'reaction', 'research_plan', 'screen', 'cell_line', 'device_description',
+    #: Built-in element kinds this client sends to `collection_elements`, each exercised against
+    #: ELN v4.0.1 (assign, then remove). LabIMotion generic elements are accepted too, keyed by
+    #: their klass name, which the server resolves. Other kinds are refused until exercised.
+    _COLLECTION_ELEMENT_KINDS = ('sample', 'reaction', 'research_plan', 'wellplate', 'screen',
+                                 'device_description', 'cell_line',
                                  'sequence_based_macromolecule_sample')
 
     def assign_elements(self, dest: AbstractCollection, *elements) -> None:
@@ -656,10 +609,10 @@ class AbstractCollection:
             if getattr(sample, 'element_type', None) != 'sample':
                 raise ValueError(f'Only samples can be split, not {getattr(sample, "element_type", sample)!r}.')
         selection = ui_state_selection(samples, 'split')['sample']['checkedIds']
-        labels = {sample.id: sample.short_label for sample in samples}
+        labels = {sample.id: sample.short_label or '' for sample in samples}
         session = self.get_root()._session
 
-        newest_before = max((row['id'] for row in self._newest_sample_rows(session, pages=1)), default=0)
+        newest_before = self._newest_id(session, 'samples')
         res = session.post('/api/v1/samples/subsamples', data={'ui_state': {
             'sample': {'all': False, 'included_ids': selection, 'excluded_ids': []},
             'currentCollectionId': self.id}})
@@ -667,48 +620,57 @@ class AbstractCollection:
             raise PermissionError(f'You may not add samples to collection "{self.label}".')
         if res.status_code not in (200, 201):
             raise ConnectionError(f'{res.status_code} -> {res.text}')
+        found = self._find_new_rows(session, 'samples', newest_before, 'split', [
+            (_child_of(labels[pid]), f'new subsample of {labels[pid]}') for pid in selection])
+        return typing.cast(list[Sample], self._load_found('sample', found))
 
-        patterns = {pid: re.compile(rf'^{re.escape(label)}-\d+$') for pid, label in labels.items()}
-        found: dict[int, int] = {}
-        # Not stopping at the first old row: the list is ordered by update time, so an older
-        # sample edited meanwhile (or a touched parent) can come before the new subsamples.
-        # Created ones have ids above anything listed before the split.
-        pages = 2 + len(selection) // 50
-        for row in self._newest_sample_rows(session, pages=pages):
-            if row['id'] <= newest_before:
-                continue
-            for parent_id, pattern in patterns.items():
-                if parent_id not in found and pattern.match(row.get('short_label') or ''):
-                    found[parent_id] = row['id']
-                    break
-        missing = [labels[pid] for pid in selection if pid not in found]
-        if missing:
-            raise ConnectionError(f'The split request was accepted, but no new subsample of '
-                                  f'{", ".join(missing)} was found in "{self.label}".')
-        root = self.get_root()
-        loader = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('sample')),
-                            typing.cast(int, self.id))
-        return [typing.cast(Sample, loader.load_element(found[pid])) for pid in selection]
-
-    def _newest_sample_rows(self, session, pages: int | None = None, stop_at_id: int | None = None):
-        """This collection's samples as list rows, newest first, page by page."""
-        return self._newest_rows(session, 'samples', pages, stop_at_id)
-
-    def _newest_rows(self, session, kind: str, pages: int | None = None, stop_at_id: int | None = None):
-        """This collection's ``kind`` (``'samples'``, ``'wellplates'``) as list rows, newest first."""
-        page = 1
-        while pages is None or page <= pages:
-            res = session.get(f'/api/v1/{kind}', params={'collection_id': self.id, 'page': page, 'per_page': 50})
+    def _newest_rows(self, session, kind: str, pages: int, params: dict | None = None):
+        """This collection's ``kind`` (``'samples'``, ``'wellplates'``, ...) as list rows, most
+        recently updated first, for at most ``pages`` pages of 50."""
+        collection_id = self._own_id(kind.replace('_', ' '))
+        for page in range(1, pages + 1):
+            res = session.get(f'/api/v1/{kind}', params={'collection_id': collection_id, 'page': page,
+                                                          'per_page': 50} | (params or {}))
             if res.status_code != 200:
                 raise ConnectionError(f'{res.status_code} -> {res.text}')
             rows = res.json().get(kind) or []
-            for row in rows:
-                if stop_at_id is not None and row['id'] <= stop_at_id:
-                    return
-                yield row
+            yield from rows
             if len(rows) < 50:
                 return
-            page += 1
+
+    def _newest_id(self, session, kind: str, params: dict | None = None) -> int:
+        return max((row['id'] for row in self._newest_rows(session, kind, 1, params)), default=0)
+
+    def _find_new_rows(self, session, kind: str, newest_before: int, action: str,
+                       wanted: list[tuple[typing.Callable[[dict], bool], str]],
+                       params: dict | None = None) -> list[int]:
+        """The ids of elements a bulk request (a split, a bulk create) just made, which the
+        server does not return.
+
+        Each ``(match, description)`` in ``wanted`` takes the newest row above ``newest_before``
+        that it matches and no earlier entry took. The lists are ordered by update time, not by
+        id, so an older element updated in between can sit among the new ones; the rows are
+        filtered by id rather than read until the first old one.
+
+        :raises ConnectionError: if one is not found. The request did happen, so the message says
+            so: repeating it would create the elements again.
+        """
+        pages = 2 + len(wanted) // 50
+        new_rows = [row for row in self._newest_rows(session, kind, pages, params) if row['id'] > newest_before]
+        found: list[int] = []
+        for match, description in wanted:
+            row_id = max((row['id'] for row in new_rows if row['id'] not in found and match(row)), default=None)
+            if row_id is None:
+                raise ConnectionError(f'The {action} request was accepted, but no {description} was found '
+                                      f'in "{self.label}".')
+            found.append(row_id)
+        return found
+
+    def _load_found(self, type_name: str, ids: list[int]) -> list:
+        root = self.get_root()
+        loader = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get(type_name)),
+                            typing.cast(int, self.id))
+        return [loader.load_element(element_id) for element_id in ids]
 
     def split_wellplates(self, *wellplates: Wellplate) -> list[Wellplate]:
         """Split wellplates into sub-wellplates on the server, as the UI's *Split* button does.
@@ -765,26 +727,10 @@ class AbstractCollection:
             raise ConnectionError(f'{res.status_code} -> {res.text}')
         return self._find_new_wellplates(session, newest_before, list(names))
 
-    def _newest_id(self, session, kind: str) -> int:
-        return max((row['id'] for row in self._newest_rows(session, kind, pages=1)), default=0)
-
     def _find_new_wellplates(self, session, newest_before: int, names: list[str]) -> list[Wellplate]:
-        # Not stopping at the first old row: the list is ordered by update time, and a split may
-        # touch its source wellplate. Created ones are newer than anything there before.
-        pages = 2 + len(names) // 50
-        new_rows = sorted((row for row in self._newest_rows(session, 'wellplates', pages=pages)
-                           if row['id'] > newest_before), key=lambda row: row['id'])
-        found: list[int] = []
-        for name in names:
-            match = next((row['id'] for row in new_rows if row.get('name') == name and row['id'] not in found), None)
-            if match is None:
-                raise ConnectionError(f'The request was accepted, but no new wellplate "{name}" was found in '
-                                      f'"{self.label}".')
-            found.append(match)
-        root = self.get_root()
-        loader = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('wellplate')),
-                            typing.cast(int, self.id))
-        return [typing.cast(Wellplate, loader.load_element(wid)) for wid in found]
+        found = self._find_new_rows(session, 'wellplates', newest_before, 'wellplate', [
+            (_named(name), f'new wellplate "{name}"') for name in names])
+        return typing.cast(list[Wellplate], self._load_found('wellplate', found))
 
     def import_samples(self, file_path: str, as_chemicals: bool = False, wait: bool = True,
                        timeout: float = 300, poll_interval: float = 2) -> ImportResult | None:
@@ -814,7 +760,8 @@ class AbstractCollection:
             raise ValueError(f'Cannot import {ext or "files without an extension"}; '
                              f'use one of {", ".join(SAMPLE_IMPORT_FORMATS)}.')
         session = self.get_root()._session
-        seen = notification_ids(session, (IMPORT_SAMPLES_SUBJECT,)) if wait else set()
+        subjects = (IMPORT_SAMPLES_SUBJECT,)
+        seen = notification_ids(session, subjects) if wait else set()
         with open(file_path, 'rb') as f:
             res = session.post('/api/v1/samples/import',
                                data={'currentCollectionId': self.id,
@@ -826,9 +773,8 @@ class AbstractCollection:
             raise ConnectionError(f'{res.status_code} -> {res.text}')
         if not wait:
             return None
-
         message = wait_for_notification(
-            session, (IMPORT_SAMPLES_SUBJECT,), seen, f'The import into "{self.label}"',
+            session, subjects, seen, f'The import into "{self.label}"',
             match=lambda m: (m.get('content') or {}).get('collection_id') == self.id,
             timeout=timeout, poll_interval=poll_interval)
         return ImportResult.from_message(message)
@@ -877,38 +823,6 @@ class AbstractCollection:
             raise ValueError(f'Collection "{self.label}" has no references')
         return collection_references(self.get_root()._session, self.id)
 
-    def update_user_labels(self, *elements, add=(), remove=()) -> None:
-        """Add and remove user labels on several elements of this collection in one go.
-
-        ``POST /api/v1/user_labels/bulk``, the UI's bulk label action. Labels can be given as
-        :class:`~chemotion_api.user.UserLabel` objects or ids. Changes are applied in one
-        transaction, right away; reload elements to see them.
-
-        The server only applies labels **you own**: others in ``add``/``remove`` are dropped, and
-        other users' private labels already on an element are left alone. Elements not in this
-        collection are skipped.
-
-        :param elements: saved elements of this collection, of any type (generic ones included).
-        :param add: labels to put on every element.
-        :param remove: labels to take off every element.
-        :raises ValueError: if no elements or no labels are given, or an element is unsaved.
-        :raises PermissionError: if none of the labels is yours, or you may not edit an element.
-        """
-        add_ids, remove_ids = _label_ids(add), _label_ids(remove)
-        if not add_ids and not remove_ids:
-            raise ValueError('Give labels to add or remove.')
-        if self.id is None:
-            raise ValueError(f'Collection "{self.label}" cannot hold elements')
-        ui_state: dict[str, Any] = {'currentCollection': {'id': self.id}}
-        ui_state |= ui_state_selection(elements, 'label')
-        session = self.get_root()._session
-        res = session.post('/api/v1/user_labels/bulk', data={
-            'ui_state': ui_state, 'add_label_ids': add_ids, 'remove_label_ids': remove_ids})
-        if res.status_code in (401, 403):
-            raise PermissionError(f'Labels not applied ({res.status_code}): {res.text}')
-        if res.status_code not in (200, 201, 204):
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-
     def move_elements(self, dest: AbstractCollection, *elements) -> list[int]:
         """Move elements from this collection into ``dest``.
 
@@ -948,11 +862,11 @@ class AbstractCollection:
             if getattr(element, 'is_new', False) or element.id is None:
                 raise ValueError('The element has not been saved yet. Save it first.')
             kind = element.element_type
-            if kind not in self._COLLECTION_ELEMENT_KINDS:
+            if kind not in self._COLLECTION_ELEMENT_KINDS and not isinstance(element, GenericElement):
                 raise ValueError(
-                    f"Moving {kind} elements between collections is not implemented. The server "
-                    f"may well accept it — this client only sends kinds it has exercised "
-                    f"({', '.join(self._COLLECTION_ELEMENT_KINDS)}); see AI/DEFERRED.md.")
+                    f"Moving {kind} elements between collections is not supported by this client; "
+                    f"it sends only kinds it has verified against the server: "
+                    f"{', '.join(self._COLLECTION_ELEMENT_KINDS)}, and generic elements.")
             # `checkedAll` is deliberately never sent: the server reduces it to
             # `where.not(id: unchecked_ids)` over the *whole* element class, not this collection,
             # so one request could attach a user's entire sample library.
@@ -986,6 +900,17 @@ class AbstractCollection:
             except ValueError:
                 return []
         return []
+
+    def _element_set(self, type_name: str, per_page: int | None, updated_to_date: datetime | None,
+                     updated_from_date: datetime | None, product_only: bool = False) -> ElementSet:
+        """Load the first page of this collection's elements of one built-in type."""
+        root = self.get_root()
+        element_type = root._element_manager.all_classes.get(type_name)
+        if element_type is None:
+            raise ValueError(f'The server has no element type "{type_name}".')
+        e = ElementSet(root._session, element_type, typing.cast(int, self.id))
+        e.load_elements(per_page, updated_to_date, updated_from_date, product_only)
+        return e
 
     def get_elements_of_iri(self, element_type: str, per_page: int | None = 10, updated_to_date: datetime | None = None,
                       updated_from_date: datetime | None = None) -> ElementSet:
@@ -1029,11 +954,7 @@ class AbstractCollection:
         :return: ElementSet of samples
         """
 
-        root = self.get_root()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('sample')),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date, product_only)
-        return e
+        return self._element_set('sample', per_page, updated_to_date, updated_from_date, product_only)
 
     def get_reactions(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
                       updated_from_date: datetime | None = None) -> ElementSet:
@@ -1047,11 +968,7 @@ class AbstractCollection:
         :return: ElementSet of reactions
         """
 
-        root = self.get_root()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('reaction')),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date)
-        return e
+        return self._element_set('reaction', per_page, updated_to_date, updated_from_date)
 
     def get_research_plans(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
                       updated_from_date: datetime | None = None) -> ElementSet:
@@ -1065,11 +982,120 @@ class AbstractCollection:
         :return: ElementSet of research plans
         """
 
-        root = self.get_root()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('research_plan')),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date)
-        return e
+        return self._element_set('research_plan', per_page, updated_to_date, updated_from_date)
+
+    def _apply_user_labels(self, *elements: AbstractElement, add: typing.Iterable[int] = (),
+                           remove: typing.Iterable[int] = ()) -> None:
+        """Add and remove user labels on several elements of this collection in one request.
+
+        .. warning:: **Beta, and private on purpose.** Prefer the supported way: set an element's
+           ``properties['user_labels']`` (a list of label ids) and ``save()`` it. This wraps the
+           ELN's bulk endpoint (``POST /api/v1/user_labels/bulk``), which applies all changes in a
+           single transaction — useful for many elements at once — but its selection model (a UI
+           state per element type, scoped to this collection) is the web UI's, and may change.
+
+        Only labels you may use (yours, or shared ones) are applied; the server drops any other id.
+
+        :param elements: elements of this collection; each must be saved (have an id).
+        :param add: ids of labels to add.
+        :param remove: ids of labels to remove.
+        :raises ValueError: if there is nothing to do, or none of the label ids is usable by you.
+        :raises PermissionError: if you may not update one of the elements (401).
+        """
+        add, remove = list(add), list(remove)
+        if not add and not remove:
+            raise ValueError('Give label ids to add or remove.')
+        ui_state: dict[str, Any] = {'currentCollection': {'id': self.id}}
+        for element in elements:
+            if element.is_new:
+                raise ValueError(f'{element} is not saved yet.')
+            key = element.json_data.get('type') if element.json_data else None
+            key = key or element.element_type
+            selection = ui_state.setdefault(key, {'all': False, 'included_ids': [], 'excluded_ids': []})
+            selection['included_ids'].append(element.id)
+        res = self.get_root()._session.post('/api/v1/user_labels/bulk', data={
+            'ui_state': ui_state, 'add_label_ids': add, 'remove_label_ids': remove})
+        if res.status_code == 400:
+            raise ValueError('The server found nothing to do.')
+        if res.status_code == 403:
+            raise ValueError('None of these label ids is yours or shared with you.')
+        if res.status_code == 401:
+            raise PermissionError('You may not update all of these elements.')
+        if res.status_code not in (200, 201, 204):
+            raise request_error(res, 'applying user labels')
+
+    def export_zip(self, destination: str | os.PathLike, timeout: float = 900) -> str:
+        """Export this collection with the server's own exporter and save the ZIP.
+
+        This is Chemotion's native export archive (the one its UI produces), not ``.eln``. The server builds it in a background
+        job; this waits for its notification, then downloads the archive to ``destination``.
+        **The ELN also emails you** that the export is ready, with the download link, as it does
+        for an export started in its web interface.
+
+        :raises PermissionError: if you may not export this collection.
+        :raises TimeoutError: if the archive is not ready within ``timeout`` seconds.
+        :return: the path written
+        """
+        from chemotion_api.utils.collection_zip import export_collection_zip
+        if not self.label:
+            # The finished export is recognised by its label in the notification text.
+            raise ValueError('Only a saved, labelled collection can be exported.')
+        session = self.get_root()._session
+        return str(export_collection_zip(session, typing.cast(int, self.id), self.label, destination,
+                                         timeout=timeout))
+
+    def get_device_descriptions(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
+                                updated_from_date: datetime | None = None) -> ElementSet:
+        """
+        List of all device descriptions.
+
+        :param per_page: How many Elements per page
+        :param updated_to_date: Set date time to fetch only elements which are updated before 'updated_to_date'
+        :param updated_from_date: Set date time to fetch only elements which are updated after 'updated_from_date'
+
+        :return: ElementSet of device descriptions
+        """
+
+        return self._element_set('device_description', per_page, updated_to_date, updated_from_date)
+
+    def get_cell_lines(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
+                       updated_from_date: datetime | None = None) -> ElementSet:
+        """
+        List of all cell-line samples (at most 50 per page — the server's limit).
+
+        :param per_page: How many Elements per page
+        :param updated_to_date: Set date time to fetch only elements which are updated before 'updated_to_date'
+        :param updated_from_date: Set date time to fetch only elements which are updated after 'updated_from_date'
+
+        :return: ElementSet of cell lines
+        """
+        return self._element_set('cell_line', per_page, updated_to_date, updated_from_date)
+
+    def get_sbmm_samples(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
+                         updated_from_date: datetime | None = None) -> ElementSet:
+        """
+        List of all sequence-based macromolecule (SBMM) samples.
+
+        :param per_page: How many Elements per page
+        :param updated_to_date: Set date time to fetch only elements which are updated before 'updated_to_date'
+        :param updated_from_date: Set date time to fetch only elements which are updated after 'updated_from_date'
+
+        :return: ElementSet of SBMM samples
+        """
+        return self._element_set('sequence_based_macromolecule_sample', per_page, updated_to_date, updated_from_date)
+
+    def get_screens(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
+                    updated_from_date: datetime | None = None) -> ElementSet:
+        """
+        List of all screens.
+
+        :param per_page: How many Elements per page
+        :param updated_to_date: Set date time to fetch only elements which are updated before 'updated_to_date'
+        :param updated_from_date: Set date time to fetch only elements which are updated after 'updated_from_date'
+
+        :return: ElementSet of screens
+        """
+        return self._element_set('screen', per_page, updated_to_date, updated_from_date)
 
     def get_wellplates(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
                       updated_from_date: datetime | None = None) -> ElementSet:
@@ -1083,52 +1109,7 @@ class AbstractCollection:
         :return: ElementSet of well plates
         """
 
-        root = self.get_root()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('wellplate')),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date)
-        return e
-
-    def get_screens(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
-                    updated_from_date: datetime | None = None) -> ElementSet:
-        """
-        List of all screens.
-
-        :param per_page: How many Elements per page
-        :param updated_to_date: Set date time to fetch only elements which are updated before 'updated_to_date'
-        :param updated_from_date: Set date time to fetch only elements which are updated after 'updated_from_date'
-
-        :return: ElementSet of screens
-        """
-        root = self.get_root()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get('screen')),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date)
-        return e
-
-    def get_cell_lines(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
-                       updated_from_date: datetime | None = None) -> ElementSet:
-        """
-        List of the cell line samples in this collection.
-
-        :param per_page: How many Elements per page (the server allows at most 50)
-        :return: ElementSet of cell lines
-        """
-        return self._list_elements('cell_line', per_page, updated_to_date, updated_from_date)
-
-    def _list_elements(self, kind: str, per_page, updated_to_date, updated_from_date) -> ElementSet:
-        root = self.get_root()
-        if kind not in root._element_manager.all_classes:
-            root._element_manager.reload()
-        e = ElementSet(root._session, typing.cast(dict, root._element_manager.all_classes.get(kind)),
-                       typing.cast(int, self.id))
-        e.load_elements(per_page, updated_to_date, updated_from_date)
-        return e
-
-    def get_device_descriptions(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
-                                updated_from_date: datetime | None = None) -> ElementSet:
-        """List of the device descriptions in this collection."""
-        return self._list_elements('device_description', per_page, updated_to_date, updated_from_date)
+        return self._element_set('wellplate', per_page, updated_to_date, updated_from_date)
 
     def split_device_descriptions(self, *devices: DeviceDescription) -> list[DeviceDescription]:
         """Split device descriptions into sub-device descriptions, as the UI's *Split* does
@@ -1140,11 +1121,6 @@ class AbstractCollection:
         return typing.cast(list[DeviceDescription], self._split_by_label(
             devices, 'device_description', 'device_descriptions',
             '/api/v1/device_descriptions/sub_device_descriptions'))
-
-    def get_sbmm_samples(self, per_page: int | None = 10, updated_to_date: datetime | None = None,
-                         updated_from_date: datetime | None = None) -> ElementSet:
-        """List of the sequence-based macromolecule samples in this collection."""
-        return self._list_elements('sequence_based_macromolecule_sample', per_page, updated_to_date, updated_from_date)
 
     def split_sbmm_samples(self, *samples: SbmmSample) -> list[SbmmSample]:
         """Split SBMM samples into subsamples (``<short label>-<n>``) in this collection
@@ -1174,38 +1150,16 @@ class AbstractCollection:
         if any(i is None for i in ids):
             raise ValueError('Save the elements before splitting them.')
         session = self.get_root()._session
-
-        def rows(pages=2):
-            for page in range(1, pages + 1):
-                res = session.get('/api/v1/generic_elements', params={
-                    'collection_id': self._own_id('generic elements'), 'el_type': klass_name, 'page': page,
-                    'per_page': 50})
-                if res.status_code != 200:
-                    raise ConnectionError(f'{res.status_code} -> {res.text}')
-                batch = res.json().get('generic_elements') or []
-                yield from batch
-                if len(batch) < 50:
-                    return
-
-        before = max((r['id'] for r in rows(1)), default=0)
+        by_template = {'el_type': klass_name}
+        before = self._newest_id(session, 'generic_elements', by_template)
         res = session.post('/api/v1/generic_elements/split', data={'ui_state': {
             'element': {'name': klass_name, 'all': False, 'included_ids': ids, 'excluded_ids': []},
             'currentCollectionId': self._own_id('generic elements')}})
         if res.status_code not in (200, 201) or (res.json() or {}).get('error'):
             raise ConnectionError(f'Splitting failed: {res.status_code} -> {res.text}')
-        new_rows = [r for r in rows() if r['id'] > before]
-        found: list[int] = []
-        for element in elements:
-            pattern = re.compile(rf'^{re.escape(element.short_label or "")}-\d+$')
-            match = max((r['id'] for r in new_rows if pattern.match(r.get('short_label') or '') and r['id'] not in found),
-                        default=None)
-            if match is None:
-                raise ConnectionError(f'No split of {element.short_label} was found in "{self.label}".')
-            found.append(match)
-        root = self.get_root()
-        loader = ElementSet(session, typing.cast(dict, root._element_manager.all_classes.get(klass_name)),
-                            typing.cast(int, self.id))
-        return [typing.cast(GenericElement, loader.load_element(i)) for i in found]
+        found = self._find_new_rows(session, 'generic_elements', before, 'split', [
+            (_child_of(e.short_label or ''), f'split of {e.short_label}') for e in elements], by_template)
+        return typing.cast(list[GenericElement], self._load_found(klass_name, found))
 
     def _split_by_label(self, elements, kind: str, list_key: str, url: str) -> list:
         if not elements or any(getattr(e, 'element_type', None) != kind for e in elements):
@@ -1221,20 +1175,10 @@ class AbstractCollection:
             raise PermissionError(f'You may not add elements to collection "{self.label}".')
         if res.status_code not in (200, 201):
             raise ConnectionError(f'{res.status_code} -> {res.text}')
-        rows = [row for row in self._newest_rows(session, list_key, pages=2) if row['id'] > before]
-        labels = {e.id: e.short_label for e in elements}
-        found: list[int] = []
-        for element_id in selection:
-            pattern = re.compile(rf'^{re.escape(labels[element_id] or "")}-\d+$')
-            match = max((r['id'] for r in rows if pattern.match(r.get('short_label') or '') and r['id'] not in found),
-                        default=None)
-            if match is None:
-                raise ConnectionError(f'No split of {labels[element_id]} was found in "{self.label}".')
-            found.append(match)
-        root = self.get_root()
-        loader = ElementSet(session, typing.cast(dict, root._element_manager.all_classes.get(kind)),
-                            typing.cast(int, self.id))
-        return [loader.load_element(i) for i in found]
+        labels = {e.id: e.short_label or '' for e in elements}
+        found = self._find_new_rows(session, list_key, before, 'split', [
+            (_child_of(labels[element_id]), f'split of {labels[element_id]}') for element_id in selection])
+        return self._load_found(kind, found)
 
     def inventory_label(self):
         """This collection's inventory label (prefix, name, counter), or ``None``."""
@@ -1371,14 +1315,50 @@ class AbstractEditableCollection(AbstractCollection):
         """
         return typing.cast(ResearchPlan, self._create_new_element('research_plan'))
 
-    def new_wellplate(self) -> Wellplate:
+    def new_cell_line(self, material_name: str, source: str) -> CellLine:
         """
-        Creates a new well plate in this collection.
+        Creates a new cell-line sample in this collection, of the material ``material_name`` from
+        ``source`` (an existing material with that name and source is reused; otherwise one is
+        created on save). Set ``properties['amount']``, ``['unit']`` and ``['passage']`` before
+        saving.
 
-        :return: New (unsaved) Wellplate
+        :return: New (unsaved) CellLine
         """
+        line = typing.cast(CellLine, self._create_new_element('cell_line'))
+        line.material['name'] = material_name
+        line.material['source'] = source
+        return line
 
-        return typing.cast(Wellplate, self._create_new_element('wellplate'))
+    def new_sbmm_sample(self, uniprot: str) -> SbmmSample:
+        """
+        Creates a new SBMM sample of the protein with the given UniProt accession, in this collection.
+
+        The server looks the accession up in UniProt when the sample is first saved.
+
+        .. note:: **Limitation.** Only proteins with a UniProt accession can be chosen here; a
+           protein that is not in UniProt, or a modified variant of one, has to be created in the
+           ELN's web UI. If this affects your work, please open an issue at
+           https://github.com/Chemotion/chemotionapi/issues and describe what you need.
+
+        :param uniprot: a UniProt accession, e.g. ``'P69905'``
+        :return: New (unsaved) SbmmSample
+        :raises ValueError: if ``uniprot`` is empty.
+        """
+        if not uniprot or not uniprot.strip():
+            raise ValueError('A UniProt accession is required, e.g. "P69905".')
+        sample = typing.cast(SbmmSample, self._create_new_element('sequence_based_macromolecule_sample'))
+        typing.cast(dict, sample.json_data)['sequence_based_macromolecule'] = {
+            'sbmm_type': 'protein', 'uniprot_derivation': 'uniprot', 'primary_accession': uniprot.strip()}
+        return sample
+
+    def new_device_description(self) -> DeviceDescription:
+        """
+        Creates a new device description in this collection. Every field is optional; set
+        ``properties['name']`` and whatever else applies before saving.
+
+        :return: New (unsaved) DeviceDescription
+        """
+        return typing.cast(DeviceDescription, self._create_new_element('device_description'))
 
     def new_screen(self) -> Screen:
         """
@@ -1388,23 +1368,14 @@ class AbstractEditableCollection(AbstractCollection):
         """
         return typing.cast(Screen, self._create_new_element('screen'))
 
-    def new_cell_line(self) -> CellLine:
+    def new_wellplate(self) -> Wellplate:
         """
-        Creates a new cell line sample in this collection. Set at least ``material_names``,
-        ``source``, ``amount``, ``unit`` and ``passage`` before saving.
+        Creates a new well plate in this collection.
 
-        :return: New (unsaved) CellLine
+        :return: New (unsaved) Wellplate
         """
-        return typing.cast(CellLine, self._create_new_element('cell_line'))
 
-    def new_device_description(self) -> DeviceDescription:
-        """Creates a new device description in this collection. :return: New (unsaved) DeviceDescription"""
-        return typing.cast(DeviceDescription, self._create_new_element('device_description'))
-
-    def new_sbmm_sample(self) -> SbmmSample:
-        """Creates a new sequence-based macromolecule sample in this collection. Fill its
-        ``macromolecule`` (or call ``use_uniprot()``) before saving. :return: New (unsaved) SbmmSample"""
-        return typing.cast(SbmmSample, self._create_new_element('sequence_based_macromolecule_sample'))
+        return typing.cast(Wellplate, self._create_new_element('wellplate'))
 
     def new_generic(self, type_name: str) -> GenericElement:
         """
@@ -1559,17 +1530,6 @@ class Collection(AbstractEditableCollection):
         """
         abs_path = self.get_path()
         self.get_root().delete(abs_path)
-
-    def export(self, file_path: str, timeout: float = 600, poll_interval: float = 2) -> str:
-        """Export this collection into a ZIP archive at ``file_path``, as the UI's *Export
-        collections* dialog does. Sub-collections are not included; export them with
-        :meth:`RootCollection.export_collections`.
-
-        See :func:`export_collections` for what the archive holds and the errors raised.
-
-        :return: ``file_path``
-        """
-        return export_collections(self._root_session(), [self], file_path, timeout, poll_interval)
 
     def _root_session(self) -> Connection:
         return typing.cast(Connection, getattr(self.get_root(), '_session'))
@@ -1923,7 +1883,7 @@ class RootCollection(AbstractCollection):
     >>> from chemotion_api import Instance
     >>> import logging
     >>> try:
-    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
     >>> except ConnectionError as e:
     >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
     >>> rc = instance.get_root_collection(True)
@@ -1942,7 +1902,6 @@ class RootCollection(AbstractCollection):
         super().__init__()
         self._sync_root: RootSyncCollection | None = None
         self._all: dict | None = None
-        self._collections_payload: dict | None = None
         self._element_manager: ElementManager
         self._session = session
         self.label = 'root'
@@ -2009,23 +1968,27 @@ class RootCollection(AbstractCollection):
         routes it to ``/collections/:id``, whose id pattern (``All|all|\\d+``) rejects
         ``"roots.json"``, so it answers **400 'id is invalid'** rather than 404.
 
-        The response is cached on the instance so ``load_collection`` and
-        ``load_sync_collection`` share one request.
+        Both halves of the listing come from this one request. ``load_collection`` reads
+        ``own`` and ``load_sync_collection`` reads ``shared_with_me``; a caller that wants both
+        from a single fetch passes the result to each as ``payload``. Nothing is cached on the
+        instance — a cache here once let a standalone ``load_sync_collection()`` serve the listing
+        from whenever ``load_collection()`` last ran, so a share granted since was invisible.
         """
         res = self._session.get('/api/v1/collections/')
         if res.status_code != 200:
             raise ConnectionError(f'{res.status_code} -> {res.text}')
-        self._collections_payload = json.loads(res.content)
-        return self._collections_payload
+        return json.loads(res.content)
 
-    def load_collection(self) -> dict[str,dict]:
+    def load_collection(self, payload: dict | None = None) -> dict[str,dict]:
         """
         Loads the collection tree from the server. Unsaved changes are lost.
 
+        :param payload: a listing already fetched by :meth:`_fetch_collections`, so one request
+            can serve both this and :meth:`load_sync_collection`. Fetched afresh when omitted.
         :return: information of the 'All' collection
         """
 
-        collections = self._fetch_collections()
+        collections = payload if payload is not None else self._fetch_collections()
         self._all = self._load_all_collection().get('collection')
         if self._all is None:
             # Seen on a real 3.1.2 server with an Admin account that owns nothing: the endpoint
@@ -2042,67 +2005,23 @@ class RootCollection(AbstractCollection):
         self._set_children(nest_by_ancestry(owned))
         return self._all
 
-    def load_sync_collection(self) -> RootSyncCollection:
+    def load_sync_collection(self, payload: dict | None = None) -> RootSyncCollection:
         """
         Loads the RootSyncCollection. The RootSyncCollection collection can be used to access all collection synced with you.
 
+        ELN v4 deleted the whole ``/syncCollections`` namespace. Collections other people share
+        with you arrive in the ``shared_with_me`` half of the same listing ``load_collection``
+        reads, so a caller holding that listing can pass it in rather than fetch twice.
+
+        :param payload: a listing already fetched by :meth:`_fetch_collections`. **Fetched afresh
+            when omitted** — a standalone call is the one you make to see a share someone just
+            granted, and must never hand back an older listing with nothing to say it is stale.
         :return: instance of RootSyncCollection
         """
-
-        # ELN v4 deleted the whole /syncCollections namespace (that path is a genuine 404 now).
-        # Collections other people share with you arrive in the `shared_with_me` half of the same
-        # listing that load_collection() reads, so reuse that response instead of a second request.
-        # The cache exists to let get_root_collection() serve both halves from one request, so it
-        # is consumed here rather than read: a standalone load_sync_collection() — the call you
-        # make to see a share someone just granted — must not hand back the listing from whenever
-        # load_collection() last ran, with nothing to indicate it is stale.
-        payload = self._collections_payload or self._fetch_collections()
-        self._collections_payload = None
+        payload = payload if payload is not None else self._fetch_collections()
         self._sync_root = RootSyncCollection(self._session, self._element_manager)
         self._sync_root._set_children(nest_by_ancestry(payload.get('shared_with_me') or []))
         return self._sync_root
-
-    def export_collections(self, *collections: Collection, file_path: str, timeout: float = 600,
-                           poll_interval: float = 2) -> str:
-        """Export several collections into one ZIP archive at ``file_path``.
-
-        See :func:`export_collections`.
-
-        :return: ``file_path``
-        """
-        return export_collections(self._session, list(collections), file_path, timeout, poll_interval)
-
-    def import_collections(self, file_path: str, timeout: float = 600, poll_interval: float = 2) -> list[Collection]:
-        """Import the collections of an export archive, as the UI's *Import collections* dialog does.
-
-        ``POST /api/v1/collections/import``. The archive's collections are created as new
-        collections of yours, at the top level, with all their elements. The collection tree is
-        reloaded afterwards (unsaved changes to it are lost).
-
-        :param file_path: a ZIP archive from :meth:`export_collections` or the UI.
-        :return: the new top-level collections.
-        :raises ConnectionError: if the server reports that the import failed.
-        """
-        subjects = (COLLECTION_ZIP_SUBJECT, COLLECTION_ZIP_FAIL_SUBJECT)
-        seen = notification_ids(self._session, subjects)
-        before = {col.id for col in self.walk()}
-        with open(file_path, 'rb') as f:
-            res = self._session.post('/api/v1/collections/import',
-                                     files={'file': (os.path.basename(file_path), f, 'application/zip')})
-        if res.status_code == 413:
-            raise ConnectionError(f'The archive {file_path} is too large for the server.')
-        if res.status_code not in (200, 201):
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-        message = wait_for_notification(self._session, subjects, seen, f'The import of {file_path}',
-                                        match=lambda m: _zip_operation(m) == 'import',
-                                        timeout=timeout, poll_interval=poll_interval)
-        if message.get('subject') == COLLECTION_ZIP_FAIL_SUBJECT:
-            raise ConnectionError(f'The import of {file_path} failed: {(message.get("content") or {}).get("data")}')
-        self.load_collection()
-        new = [col for col in self.walk() if col.id not in before]
-        new_ids = {col.id for col in new}
-        return [typing.cast(Collection, col) for col in new
-                if col._parent is self or getattr(col._parent, 'id', None) not in new_ids]
 
     @staticmethod
     def _is_unsaved(col: AbstractCollection) -> bool:
@@ -2129,8 +2048,9 @@ class RootCollection(AbstractCollection):
                     raise ConnectionError(f'{res.status_code} -> {res.text}')
                 created = json.loads(res.content)['collection']
                 child.id = created['id']
-                if isinstance(getattr(child, 'collection_json', None), dict):
-                    child.collection_json.pop('isNew', None)
+                collection_json = getattr(child, 'collection_json', None)
+                if isinstance(collection_json, dict):
+                    collection_json.pop('isNew', None)
             self._create_unsaved(child, child.id)
 
     def _bulk_update_tree(self, node: AbstractCollection) -> list[dict]:

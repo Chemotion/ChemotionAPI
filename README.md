@@ -3,8 +3,7 @@
 A modernized Python client for the [Chemotion ELN](https://chemotion.net/) REST/Grape API,
 targeting **ELN v4** and validating element properties with **Pydantic v2**.
 
-The FAIR `.eln` (RO-Crate) export and the offline ingester are a separate pull request on this
-line and are **not** in this release.
+The FAIR `.eln` (RO-Crate) export and the offline ingester are **not** in this release.
 
 ## Key features
 
@@ -31,7 +30,8 @@ line and are **not** in this release.
   no meaningful overlap. Connecting to an older instance raises `UnsupportedServerVersion` at
   `test_connection()`, before any credentials are sent.
   **For an ELN 3.1.x server, use the `312.x` release line instead.**
-  The version scheme tracks the server: `400.x.y` ↔ ELN 4.0, `312.x.y` ↔ ELN 3.1.2.
+  The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.x (from 4.0.1; 401.1.2 is tested
+  against 4.0.2), `312.x.y` ↔ ELN 3.1.2.
 - For development: [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/)
   (plus docker for the integration test stack).
 
@@ -49,12 +49,14 @@ pip install .
 
 ## Development tasks
 
+Rules for code that talks to the ELN are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 Everything is automated through [`just`](./justfile) — run `just` for the full list:
 
 ```bash
 just sync               # create/refresh the locked virtualenv (uv)
 just check              # lint + mypy + offline test suite (the local gate)
-just test-integration   # integration suite against the self-contained docker ELN (also runs nightly in CI)
+just test-integration   # integration suite against the self-contained docker ELN (local only; not run in CI)
 just cov                # offline-suite coverage report (gated at 54%)
 just docs               # build the Sphinx documentation
 just schemas            # dump the LabIMotion JSON schemas from a live ELN
@@ -64,12 +66,16 @@ just build              # build sdist + wheel
 
 ## Quickstart
 
+Log in with an API token. Create one in the ELN under *Account & Profile* → *Account* →
+*Authentication Token*; the ELN requires two-factor authentication for this. Logging in with a user name and password still works but is deprecated: it issues a
+`FutureWarning`.
+
 Connect and create a validated sample and reaction:
 
 ```python
 from chemotion_api import Instance
 
-with Instance("https://chemotion.dept.uni.de", username="USER", password="PASS") as instance:
+with Instance("https://chemotion.dept.uni.de", token="chemtoken_...") as instance:
     project = instance.get_or_create_collection("My Synthesis Project")
 
     sample = project.new_sample_smiles("CCO")
@@ -94,7 +100,7 @@ use the generic manager:
 ```python
 from chemotion_api import Instance
 
-with Instance("https://...", username="USER", password="PASS") as instance:
+with Instance("https://...", token="chemtoken_...") as instance:
     instance.generic_manager().write_all_validation_schemas()
 ```
 
@@ -121,8 +127,8 @@ chemotion_api --help    # scaffold, start/stop, configure ports, back up local i
 
 ## Documentation
 
-Sphinx documentation (API reference + guides) lives in [docs/](./docs) and builds in CI on
-every push:
+Sphinx documentation (API reference + guides) lives in [docs/](./docs). Read the Docs builds it
+from `main` and publishes it at <https://chemotionapi.readthedocs.io/>; to build it locally:
 
 ```bash
 just docs    # → docs/_build/html/index.html
@@ -130,6 +136,9 @@ just docs    # → docs/_build/html/index.html
 
 For AI coding assistants, [skills/chemotion-api/](./skills/chemotion-api/SKILL.md) is a skill with
 the common workflows and a signature reference (`references/api.md`).
+It also ships in the installed package, matching its version, at
+`chemotion_api/skills/chemotion-api/` (find it with
+`python -c "import chemotion_api, pathlib; print(pathlib.Path(chemotion_api.__file__).parent / 'skills')"`).
 
 ## Testing
 

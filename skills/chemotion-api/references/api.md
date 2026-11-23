@@ -34,10 +34,10 @@ each element type. Read the section you need; SKILL.md has the workflows.
 ## 1. Instance (`from chemotion_api import Instance`)
 
 ```
-Instance(host_url: str | Connection, verify_ssl: bool = True)
+Instance(host_url: str | Connection, verify_ssl: bool = True, username=None, password=None, token=None)  # username/password deprecated
   .test_connection() -> Instance              # ConnectionError if the server is not reachable
-  .login(user, password) -> Instance          # user = name abbreviation or e-mail; PermissionError
-  .login_token(jwt_token) -> Instance         # token not checked until the next request
+  .login(user, password) -> Instance          # DEPRECATED (FutureWarning); use login_token. PermissionError
+  .login_token(jwt_token) -> Instance         # API token (chemtoken_...) or JWT; not checked until the next request
   .token / .host_url                          # properties
   .get_user() -> Person | Admin | Group | Device
   .find_user_by_name(name) -> list[Person]    # top 3 matches
@@ -45,7 +45,7 @@ Instance(host_url: str | Connection, verify_ssl: bool = True)
   .get_collection_by_id(collection_id) -> Collection
   .get_collection_of_element(element) -> Collection
   .get_sample(id) / .get_reaction(id) / .get_wellplate(id) / .get_research_plan(id)
-  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for unknown type
+  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for an unknown type or an id of another type
   .get_json_ld_id(element.json_ld['@id']) -> element
   .get_all_types() -> list[str]               # JSON-LD types (IRIs)
   .all_element_classes                        # dict of all element types incl. generic ones
@@ -92,7 +92,7 @@ Collection (owned) additionally
   .delete()                        # local until root.save()
   .share(CollectionSharePermission, *users_or_groups, detail_level=0..10)   # sent immediately
   .get_shares() / .update_share(share_id, ...) / .unshare(*users, all=False)
-  .export(file_path) / .metadata() / .save_metadata(dict) / .take_ownership()    # see 17
+  .export_zip(destination) / .metadata() / .save_metadata(dict) / .take_ownership()    # see 17
   .gate_token(origin) / .register_gate(url, token) / .check_transmission(url) / .transmit(url)
 
 RootCollection                     # no new_* methods: elements cannot be created in 'All'
@@ -114,7 +114,7 @@ data is accessed (see SKILL.md). `len(es)` is the total number on the server (se
 Sample listings omit samples that are only reactants or solvents of a reaction (server behavior).
 
 ```
-.page (get/set) / .max_page / .iter_pages() / .next_page() / .prev_page()
+.page (get/set) / .max_page / .iter_pages() / .next_page() / .prev_page()   # setting a missing page: IndexError
 .iter_elements(start_page=1)
 ```
 
@@ -145,7 +145,7 @@ Sample listings omit samples that are only reactants or solvents of a reaction (
 .set_amount(value, unit=None)          # unit: QuantityUnit or 'g'/'mol'/'l'/'Equivalent'
 .get_amount() -> {'value', 'unit'}     # real_amount for products, else target_amount
 .allowed_quantity_units() -> list[QuantityUnit]
-.gram / .mol / .liter                  # converted amount
+.gram / .mol / .liter                  # converted amount; None without an amount or if not convertible
 .equivalent / .reference / .is_mixture
 .reaction / .role_in_reaction          # 'starting_materials' | 'reactants' | 'products' | 'solvents' |
                                        # 'purification_solvents' | None
@@ -169,7 +169,7 @@ Property keys (`sample.properties[...]`):
 | stereo | {'abs': ..., 'rel': ...} | |
 | solvent | SolventList | .add_new_name(name), .add_new_smiles(smiles); entries {label, smiles, inchikey, ratio} |
 | is_top_secret, is_restricted, decoupled, waste, inventory_sample, show_label | bool | |
-| reference | bool | reference material of its reaction |
+| reference | bool | reference material of its reaction; this and the other reaction-link fields (equivalent, coefficient, position, waste, show_label, gas_*) are saved only by reaction.save() |
 | equivalent | float | setting it sets the amount from the reference |
 | coefficient | int | > 0 |
 | user_labels | list | |
@@ -193,6 +193,7 @@ Property keys (`sample.properties[...]`):
 MaterialList (list of Sample)
   .append(sample)          # starting_materials/reactants: split; products: copy; solvents: as is
   .append_no_split(sample) # adds the sample itself; sets reaction, role, position, amount like append
+                           # any add raises ValueError if the reaction already holds the sample (any role)
 
 Temperature (properties['temperature'], a dict)
   .add_time_point(hour, minute, second, temperature)
@@ -374,12 +375,15 @@ GasType: OFF, GAS, CATALYST, FEEDSTOCK
 | exception | typical cause |
 |---|---|
 | ConnectionError | server unreachable, collection/profile request failed, share failed |
-| PermissionError | login failed |
+| PermissionError | login failed; SciFinder-n token missing or expired |
+| chemotion_api.connection.TokenExpiredError | PermissionError raised before sending: the login token has expired |
 | requests.exceptions.RequestException | element load/save failed; 401 = not visible to this user |
 | chemotion_api.connection.ChemotionRequestError | subclass raised by element load/save/list; .status_code, .url, .context, .snippet |
 | chemotion_api.connection.ChemotionServerError | the same for 5xx (server bug, often triggered by invalid data) |
+| chemotion_api.connection.ChemotionRejectedError | success status, but the body reports a refusal (`{"errors": ...}`, `{"error": ...}`, `{"success": false}`); also ConnectionError and ValueError; .body is the decoded reply |
+| IndexError | `ElementSet.page` set to a page that does not exist |
 | ModuleNotFoundError | collection path does not exist |
-| ValueError | invalid segment value, unit not allowed, unknown generic type/label, unsaved element in url()/open(), SMILES the server cannot resolve ('Mg' instead of '[Mg]') |
+| ValueError | invalid segment value, unit not allowed, unknown generic type/label, generic id of another type, equivalents without a reference amount in mol, unsaved element in url()/open(), SMILES the server cannot resolve ('Mg' instead of '[Mg]'), a change the ELN would drop (reaction-link field via sample.save(), saved sample's short_label, reaction RInChI) |
 | KeyError | sample has no reaction; unknown segment/field name |
 | StopIteration | by_name/by_id/dataset_by_name found nothing |
 | NotImplementedError | quantities of mixtures in variations |
@@ -398,18 +402,17 @@ AbstractCollection
   .export_elements(path, *elements, file_format='xlsx'|'sdf', columns=None) -> path | None
   .export_reaction_smiles(path, *reactions, notation='SM>R>P') -> path | None
   .references() -> {'collection'|'sample'|'reaction'|'research_plan': [Reference]}
-  .update_user_labels(*elements, add=(), remove=())
   .get_screens() / .get_cell_lines() / .get_device_descriptions() / .get_sbmm_samples()   # ElementSet
   .get_vessels() / .new_vessel(template, **fields) / .new_vessels(template, count, base_name=None)
   .inventory_label() -> InventoryLabel | None
 Collection
-  .export(path, timeout=600) -> path        # ZIP via a background job
+  .export_zip(destination, timeout=900) -> path   # the ELN's native ZIP, via a background job
   .metadata() -> dict | None / .save_metadata(dict)              # DataCite fields
   .take_ownership() -> dict                 # accept a PassOwnership share
   .gate_token(origin) / .register_gate(destination, token)
   .check_transmission(target) / .transmit(target, wait=True)     # target required (server default = public repo)
-RootCollection
-  .export_collections(*cols, file_path=...) / .import_collections(path) -> list[Collection]
+Instance
+  .import_zip(path) -> list[Collection]
 ```
 
 ## 18. Element additions (`AbstractElement`)
@@ -424,9 +427,9 @@ RootCollection
 .save_analyses()                            # only the analyses (PUT /containers/container)
 .delete_analysis(analysis)                  # immediate, files gone
 .linked_research_plans() -> [{'id', 'name'}]      # samples and reactions
-.chemical() -> Chemical | None / .save_chemical(Chemical)            # samples, SBMM samples
-.attach_safety_sheet(pdf, vendor_name, vendor_product, vendor_info=None, cas=None)
-.save_vendor_safety_sheet(chemical, vendor_product)
+Sample.get_chemical() -> Chemical                                   # .exists / .save(); .cas, .data
+Sample.attach_safety_sheet(pdf, vendor_name, vendor_product, vendor_info=None, cas=None) -> Chemical
+Sample.save_vendor_safety_sheet(chemical, vendor_product) -> Chemical
 .measurements(hierarchy=True, source=None) -> list[Measurement]      # samples
 .create_measurements([{'sample', 'description', 'value', 'unit', 'metadata'?}])   # on the source element
 Sample:   .svg_path / .components() / .save_components([Component])
@@ -434,7 +437,7 @@ Reaction: .render_scheme_svg(products_only=False) / .report_docx(path) / .export
 Wellplate: .export_samples_excel(path) / .download_template(path) / .import_spreadsheet(path)
 ResearchPlan: .metadata() / .save_metadata(**fields) / .upload_svg(svg, is_chemdraw=False)
 ```
-`chemotion_api.chemicals.Chemical(id, cas, data, ...)`: `data` is `chemical_data[0]`; `.safety_sheets` paths.
+`chemotion_api.elements.sample.Chemical`: `data` is `chemical_data[0]`; `.safety_sheets` paths.
 
 ## 19. More element types
 
@@ -442,14 +445,10 @@ ResearchPlan: .metadata() / .save_metadata(**fields) / .upload_svg(svg, is_chemd
 Screen        col.new_screen(); .add_wellplate(p) / .remove_wellplate(p) / .add_research_plan(rp)
               .new_research_plan(collection); properties: name, collaborator, requirements,
               conditions, result, description, wellplates, research_plans
-CellLine      col.new_cell_line(); properties: name, amount, unit, passage, contamination, description,
-              material_names, source, organism, tissue, cell_type, ... ; .copy(col) / .split(col)
-              new ones need material_names, source, amount, unit, passage
-DeviceDescription  col.new_device_description(); ~60 fields (device_description.FIELDS);
-              .download_analyses(path); instance.device_ontologies()
-SbmmSample    col.new_sbmm_sample(); .macromolecule (dict) / .use_uniprot(accession)
-              raises SbmmUpdateNotAllowed when the macromolecule is used elsewhere
-              instance.search_macromolecules(term, field) / get_macromolecule(id_or_acc, source)
+CellLine      col.new_cell_line(material_name, source); .material is the shared cell line material
+              (edits check who owns it); see docs/CellLineDetails.rst
+DeviceDescription  col.new_device_description(); a rejected create raises ValueError
+SbmmSample    col.new_sbmm_sample(uniprot_accession); .macromolecule is read-only
 vessels       VesselTemplate(name, vessel_type, material_type, volume_amount, ...).save()/.delete()/.vessels()
               Vessel(name, short_label, weight_amount, ...).save()/.delete(); UUID ids
 ```
@@ -460,7 +459,8 @@ vessels       VesselTemplate(name, vessel_type, material_type, volume_amount, ..
 instance.molecule() -> MoleculeManager
   .create_molecule_by_molfile(molfile, decoupled=False)   # ValueError for the server's DUMMY molecule
   .get_molecule_by_inchikey(k) / .load_cas(inchikey) / .lookup_cas(cas)
-  .get_names(mol_id) / .add_name(mol_id, name) / .render_svg(molfile) / .load_svg(mol)
+  .get_names(mol_id) -> [MoleculeName] / .add_name(mol_id, name) -> MoleculeName
+  .render_svg(molfile) / .load_svg(mol)
   .molecular_weight(sum_formula)
 col.new_sample_molfile(molfile)
 sample.components() / sample.save_components([Component.new(molecule, amount_mol=...)])
@@ -522,7 +522,7 @@ instance.api_tokens() / .create_api_token(otp, name=None, expires_in_days=30) / 
 instance.set_short_label_counter(type, value) / .set_reaction_short_label(prefix, count)
 instance.text_templates(): .predefined_names() / .predefined(name) / .personal() /
     .create_personal(name, ops) / .update_personal(t) / .delete_personal(t) / .toolbar(type) / .set_toolbar(type, groups)
-instance.scifinder_credential() / .scifinder_search(structure, search_for, structure_type)
+instance.scifinder_credential() / .scifinder_search(structure, search_for, structure_type)   # provider failure: ConnectionError
 instance.simulate_nmr(mol) / .predict_products(smiles) / .predict_reactants(smiles)
 instance.compute_tasks() / .submit_compute_task(sample); ComputeTask.check() / .revoke() / .delete()
 instance.sample_tasks(status) / .create_sample_task(sample, description, n); SampleTask.add_scan_result(...)
@@ -540,7 +540,7 @@ users    .find_users(name) / .update_user(u, **fields) / .delete_user(u, confirm
          .set_user_rights(u, molecule_editor=, converter_admin=, generic_elements_admin=, ...)
          .default_allocated_space() / .set_default_allocated_space(mb)
 groups   .remove_users_from_group(g, *users) / .set_group_admin(g, u, admin=True) / .delete_group(g, confirm=abbr)
-devices  .list_devices(name=None) / .get_device(d) / .add_device(name, abbr) / .update_device(d, **fields)
+devices  .list_devices(name=None) / .get_device(d) / .create_device(name, abbr, email=None, serial_number=None) -> Device / .update_device(d, **fields)
          .delete_device(d, confirm=abbr) / .remove_device_user(d, u) / .test_sftp(d, host, user)
          .local_collectors() / .device_metadata(d) / .save_device_metadata(d, **f) / .sync_device_metadata(d)
 system   .disk_usage() / .jobs() / .restart_job(job) / .queue_admin_task(task) / .matrices() / .update_matrix(m, **f)

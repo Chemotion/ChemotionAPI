@@ -1,100 +1,97 @@
-"""Device descriptions: lab instruments documented as elements (``/api/v1/device_descriptions``, M4.3)."""
-from __future__ import annotations
+"""Device descriptions: the v4 element type recording an instrument and how it is run.
 
-from typing import Any, cast
+Unlike every other element, a device description carries its **own ontology annotations**:
+an admin picks terms for it from the TIB Terminology Service, and each stored entry already
+holds a full IRI. That makes it the only element whose ontology terms need no resolution
+chain at all — see :meth:`DeviceDescription.ontology_terms`.
+"""
+from typing import cast
 
-from chemotion_api.connection import request_error
+from chemotion_api.models import DeviceDescriptionPropertiesModel
 from chemotion_api.elements.abstract_element import AbstractElement
 from chemotion_api.elements.registry import register_element_type
 
-#: The fields of a device description (``device_description_api.rb``'s default params). Most are
-#: strings; ``general_tags`` is a list of strings, ``operators``, ``contact_for_maintenance``,
-#: ``planned_maintenance``, ``consumables_needed_for_maintenance`` and ``unexpected_maintenance``
-#: are lists of dicts, ``setup_descriptions`` is a dict, ``helpers_uploaded`` a bool and the two
-#: ``version_installation_*_date`` values ISO dates.
-FIELDS = (
-    'name', 'short_label', 'device_id', 'device_type_name', 'device_type_id', 'device_type_id_type', 'device_class',
-    'device_class_detail', 'operation_mode', 'vendor_device_name', 'vendor_device_id', 'serial_number',
-    'vendor_company_name', 'vendor_id', 'vendor_id_type', 'description', 'general_tags', 'version_number',
-    'version_installation_start_date', 'version_installation_end_date', 'version_identifier_type', 'version_doi',
-    'version_doi_url', 'version_characterization', 'operators', 'owner_institution', 'owner_email', 'owner_id',
-    'owner_id_type', 'inventory_id', 'alternative_identifier', 'university_campus', 'institute', 'building', 'room',
-    'infrastructure_assignment', 'access_options', 'access_comments', 'size', 'weight', 'weight_unit',
-    'application_name', 'application_version', 'vendor_url', 'helpers_uploaded', 'policies_and_user_information',
-    'description_for_methods_part', 'ontologies', 'setup_descriptions', 'maintenance_contract_available',
-    'maintenance_scheduling', 'contact_for_maintenance', 'planned_maintenance', 'consumables_needed_for_maintenance',
-    'unexpected_maintenance', 'measures_after_full_shut_down', 'measures_after_short_shut_down',
-    'measures_to_plan_offline_period', 'restart_after_planned_offline_period',
+#: Scalar fields the ELN exposes as ``properties``. Deliberately not the whole entity:
+#: `container`, `attachments`, `segments` and `comments` are handled by the base class, and
+#: `ontologies` has its own accessor. Fields not listed here still survive a save (see
+#: :meth:`DeviceDescription._clean_properties_data`).
+DEVICE_FIELDS = (
+    'name', 'short_label', 'description',
+    'device_type_name', 'device_type_id', 'device_type_id_type',
+    'device_class', 'device_class_detail', 'operation_mode',
+    'vendor_device_name', 'vendor_device_id', 'vendor_company_name', 'serial_number',
+    'version_number', 'version_doi', 'version_doi_url', 'version_characterization',
+    'version_installation_start_date', 'version_installation_end_date',
+    'owner_institution', 'university_campus', 'institute', 'building', 'room',
+    'application_name', 'application_version', 'vendor_url',
+    'general_tags', 'operators',
 )
-_LISTS = ('general_tags', 'operators', 'contact_for_maintenance', 'planned_maintenance',
-          'consumables_needed_for_maintenance', 'unexpected_maintenance', 'ontologies')
 
 
 @register_element_type('device_description', url='/api/v1/device_descriptions')
 class DeviceDescription(AbstractElement):
-    """
-    A device description: one instrument, with its vendor, version, location, operators,
-    maintenance records and ontology terms. It extends
-    :class:`chemotion_api.elements.abstract_element.AbstractElement`, so analyses, segments and
-    attachments work as for other elements.
-
-    ``properties`` holds :data:`FIELDS`. ``ancestor_ids`` lists the device descriptions this one
-    was split from (see ``collection.split_device_descriptions()``).
+    """A Chemotion *device description* — an instrument, its vendor, version and siting.
 
     Usage::
 
-    >>> dev = collection.new_device_description()
-    >>> dev.properties.update(name='NMR 400', vendor_company_name='Bruker', room='1.23')
-    >>> dev.properties['operators'] = [{'name': 'Ada Lovelace', 'email': 'ada@example.org', 'type': 'technical'}]
-    >>> dev.save()
+        >>> device = collection.new_device_description()
+        >>> device.properties['name'] = 'NMR 400'
+        >>> device.save()
+        >>> for device in collection.get_device_descriptions():
+        ...     print(device.properties['name'], device.ontology_terms())
     """
+
+    _properties_model = DeviceDescriptionPropertiesModel
+
+    def _record_from_create(self, res_json: dict) -> dict | None:
+        # A rejected create is answered with 201 and ``{"errors": {...}}`` (the route rescues
+        # ActiveRecord::RecordInvalid), so the status code alone would report success.
+        if 'errors' in res_json:
+            raise ValueError(f'The ELN refused to create the device description: {res_json["errors"]}')
+        return super()._record_from_create(res_json)
 
     def _parse_properties(self) -> dict:
         data = cast(dict, self.json_data)
-        props: dict[str, Any] = {key: data.get(key) for key in FIELDS}
-        for key in _LISTS:
-            props[key] = props[key] or []
-        props['setup_descriptions'] = props['setup_descriptions'] or {}
-        return props
-
-    @property
-    def ancestor_ids(self) -> list[int]:
-        """The device descriptions this one was split from, nearest last."""
-        return list(cast(dict, self.json_data).get('ancestor_ids') or [])
+        return self._validated_properties({key: data.get(key) for key in DEVICE_FIELDS})
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
-        out: dict[str, Any] = {}
-        for key in FIELDS:
-            value = self.properties.get(key)
-            if value is None or (key in ('version_installation_start_date', 'version_installation_end_date')
-                                 and value == ''):
+        serialize_data = serialize_data if serialize_data is not None else {}
+        data = cast(dict, self.json_data)
+        # Start from the server's own record so fields this client does not model (there are
+        # ~50 more on the entity, from maintenance scheduling to shut-down procedures) survive
+        # a save instead of being dropped by a round trip through a narrower model.
+        out = dict(data)
+        for key in DEVICE_FIELDS:
+            if key in self.properties:
+                out[key] = self.properties.get(key)
+        return out | serialize_data
+
+    def ontology_terms(self) -> list[dict]:
+        """The device's ontology annotations as ``{"iri": …, "label": …}``.
+
+        The ELN stores these as a list of ``{"data": {...}, "segments": [...], ...}`` entries
+        whose ``data`` comes straight from the **TIB Terminology Service**, so each already
+        carries a resolvable ``iri`` and its ``label``. Nothing needs looking up.
+
+        Entries flagged ``is_deleted`` are dropped — the ELN keeps them in the column so the
+        UI can show an undo; they are no longer annotations of the device.
+        """
+        terms: list[dict] = []
+        seen: set[str] = set()
+        for entry in (cast(dict, self.json_data).get('ontologies') or []):
+            if not isinstance(entry, dict) or entry.get('is_deleted'):
                 continue
-            out[key] = value
-        return out
-
-    def download_analyses(self, file_path: str) -> str:
-        """
-        Saves the files of all analyses as one ZIP (``GET /api/v1/attachments/device_description_analyses/:id``).
-
-        :return: ``file_path``
-        :raises ConnectionError: when the server instead builds the archive in the background
-            (large analyses) and announces it as a notification.
-        """
-        res = self._session.get(f'/api/v1/attachments/device_description_analyses/{self._saved_id_for("analyses")}')
-        if res.status_code != 200:
-            raise request_error(res, f'downloading the analyses of device description {self.id}')
-        if 'zip' not in (res.headers.get('Content-Type') or '') and not res.content.startswith(b'PK'):
-            raise ConnectionError('The server is preparing the archive in the background; it will send a '
-                                  'notification with the download link.')
-        with open(file_path, 'wb') as f:
-            f.write(res.content)
-        return file_path
-
-
-def ontologies(session) -> list[dict]:
-    """The ontology terms device descriptions can be tagged with, as offered by the segment klasses
-    (``GET /api/v1/device_descriptions/ontologies``)."""
-    res = session.get('/api/v1/device_descriptions/ontologies')
-    if res.status_code != 200:
-        raise request_error(res, 'loading the device ontologies')
-    return res.json() or []
+            data = entry.get('data')
+            if not isinstance(data, dict):
+                continue
+            iri = data.get('iri')
+            if not isinstance(iri, str) or not iri.strip() or iri in seen:
+                continue
+            seen.add(iri)
+            label = data.get('label')
+            terms.append({
+                'iri': iri.strip(),
+                'label': label.strip() if isinstance(label, str) and label.strip()
+                else (data.get('short_form') or data.get('obo_id') or iri),
+            })
+        return terms

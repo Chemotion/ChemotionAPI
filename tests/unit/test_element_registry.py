@@ -13,11 +13,11 @@ from chemotion_api.elements.registry import (
 )
 from chemotion_api.elements.research_plan import ResearchPlan
 from chemotion_api.elements.sample import Sample
-from chemotion_api.elements.screen import Screen
-from chemotion_api.elements.cell_line import CellLine
-from chemotion_api.elements.device_description import DeviceDescription
-from chemotion_api.elements.sbmm import SbmmSample
 from chemotion_api.elements.wellplate import Wellplate
+from chemotion_api.elements.screen import Screen
+from chemotion_api.elements.device_description import DeviceDescription
+from chemotion_api.elements.sbmm_sample import SbmmSample
+from chemotion_api.elements.cell_line import CellLine
 
 # What the removed if/elif chains returned, so the registry is a drop-in replacement.
 BUILT_INS = {
@@ -26,10 +26,10 @@ BUILT_INS = {
     'wellplate': (Wellplate, '/api/v1/wellplates', 'wellplate'),
     'research_plan': (ResearchPlan, '/api/v1/research_plans', 'research_plan'),
     'screen': (Screen, '/api/v1/screens', 'screen'),
-    'cell_line': (CellLine, '/api/v1/cell_lines', 'cell_line'),
     'device_description': (DeviceDescription, '/api/v1/device_descriptions', 'device_description'),
     'sequence_based_macromolecule_sample': (SbmmSample, '/api/v1/sequence_based_macromolecule_samples',
                                             'sequence_based_macromolecule_sample'),
+    'cell_line': (CellLine, '/api/v1/cell_lines', 'cell_line'),
 }
 
 
@@ -51,10 +51,10 @@ def test_unregistered_names_fall_back_to_the_generic_routes():
 
 
 def test_an_unknown_non_generic_type_names_itself_and_is_still_a_type_error():
-    with pytest.raises(UnknownElementType, match='"unknown_kind"') as err:
-        element_class('unknown_kind')
+    with pytest.raises(UnknownElementType, match='"no_such_type"') as err:
+        element_class('no_such_type')
     assert isinstance(err.value, TypeError)
-    assert err.value.name == 'unknown_kind'
+    assert err.value.name == 'no_such_type'
 
 
 def _element_set(name, is_generic):
@@ -67,7 +67,7 @@ def test_element_set_dispatches_through_the_registry():
     assert _element_set('reaction', False)._get_element_class() is Reaction
     assert _element_set('anything', True)._get_element_class() is GenericElement
     with pytest.raises(UnknownElementType):
-        _element_set('unknown_kind', False)._get_element_class()
+        _element_set('no_such_type', False)._get_element_class()
 
 
 def test_a_name_cannot_be_registered_to_two_classes():

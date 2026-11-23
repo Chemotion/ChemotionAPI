@@ -1,72 +1,17 @@
 More element types and element tools
 ====================================
 
-Screens, cell lines, device descriptions and SBMM samples are elements like samples: create them in a
-collection, change ``properties`` and call ``save()``. Listing works through the collection
-(``get_screens()``, ``get_cell_lines()``, ``get_device_descriptions()``, ``get_sbmm_samples()``) and
-single elements through the instance (``get_screen(id)``, …).
+Vessels, deletion, splitting, comments, private notes, versions, literature, labels, molecules and
+mixtures: tools that work across element types.
 
-Screens
--------
-
-.. code-block:: python
-
-    screen = collection.new_screen()
-    screen.properties['name'] = 'Kinase panel'
-    plate = collection.new_wellplate(); plate.save()
-    screen.add_wellplate(plate)
-    screen.save()
-    plan = screen.new_research_plan(collection)   # created and linked by the server
-
-.. autoclass:: chemotion_api.elements.screen.Screen
-    :members:
-
-Cell lines
-----------
-
-A cell line *sample* belongs to a cell line *material*, which the server finds or creates by
-``material_names`` and ``source``.
+Screens, cell lines, device descriptions and SBMM samples each have their own page
+(:doc:`ScreenDetails`, :doc:`CellLineDetails`, :doc:`DeviceDescriptionDetails`,
+:doc:`SbmmSampleDetails`). Device descriptions and SBMM samples can also be split on the server:
 
 .. code-block:: python
 
-    cells = collection.new_cell_line()
-    cells.properties.update(material_names='HeLa', source='ATCC', amount=1_000_000,
-                            unit='cell count', passage=12, organism='Homo sapiens')
-    cells.save()
-    part = cells.split(collection)       # created right away, labelled <short label>-1
-
-.. autoclass:: chemotion_api.elements.cell_line.CellLine
-    :members: copy, split, material_id
-
-Device descriptions
--------------------
-
-.. code-block:: python
-
-    dev = collection.new_device_description()
-    dev.properties.update(name='NMR 400', vendor_company_name='Bruker', room='1.23')
-    dev.save()
     (sub,) = collection.split_device_descriptions(dev)
-    dev.download_analyses('analyses.zip')
-
-.. autoclass:: chemotion_api.elements.device_description.DeviceDescription
-    :members: ancestor_ids, download_analyses
-
-Sequence-based macromolecule samples
-------------------------------------
-
-.. code-block:: python
-
-    s = collection.new_sbmm_sample()
-    s.properties['name'] = 'Lysozyme batch 1'
-    s.use_uniprot('P61626')               # or fill s.macromolecule (short_name, sequence, ...)
-    s.save()
-    instance.search_macromolecules('lysozyme', 'protein_name')
-
-.. autoclass:: chemotion_api.elements.sbmm.SbmmSample
-    :members: macromolecule, use_uniprot
-
-.. autoexception:: chemotion_api.elements.sbmm.SbmmUpdateNotAllowed
+    (part,) = collection.split_sbmm_samples(sbmm)
 
 Vessels
 -------
@@ -109,7 +54,7 @@ Comments, private notes, versions, literature and labels
     for version in sample.versions():
         print(version.time, version.user, version.changes)
     sample.add_reference(doi='10.1021/acs.jchemed.0c00101')
-    collection.update_user_labels(sample, reaction, add=[label])
+    sample.properties['user_labels'] = [label.id]; sample.save()
 
 .. automethod:: chemotion_api.elements.abstract_element.AbstractElement.versions
     :no-index:

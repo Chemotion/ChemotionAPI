@@ -9,7 +9,8 @@ The amount of a sample is set with :meth:`chemotion_api.elements.sample.Sample.s
 (see :meth:`chemotion_api.elements.sample.Sample.allowed_quantity_units`). If the sample is part of a reaction,
 this updates the equivalents of all reaction materials. The converted amount is available as
 :attr:`chemotion_api.elements.sample.Sample.gram`, :attr:`chemotion_api.elements.sample.Sample.mol` and
-:attr:`chemotion_api.elements.sample.Sample.liter`.
+:attr:`chemotion_api.elements.sample.Sample.liter`; each is ``None`` when the sample has no amount or it
+cannot be converted (mol needs a molecular weight, liter a density or molarity).
 
 .. code-block:: python
 
@@ -44,6 +45,58 @@ this updates the equivalents of all reaction materials. The converted amount is 
 .. autoenum:: chemotion_api.elements.utils.QuantityUnit
 
 .. autoenum:: chemotion_api.elements.utils.GasType
+
+Saving a sample that is part of a reaction
+------------------------------------------
+
+A sample's place in a reaction (``reference``, ``equivalent``, ``coefficient``, ``position``,
+``waste``, ``show_label`` and the gas fields) is stored with the reaction, not with the sample. After
+changing one of these, save the reaction: ``sample.save()`` raises ``ValueError``, because the ELN
+would discard the change without an error.
+
+.. code-block:: python
+
+    reaction = instance.get_reaction(1)
+    reaction.starting_materials[0].properties['coefficient'] = 2
+    reaction.save()
+
+A saved sample's ``short_label`` cannot be changed; the ELN assigns it and ignores changes to it.
+
+Chemical inventory and safety data
+----------------------------------
+
+The ELN's *Chemicals* tab, with vendor, amounts, storage location and safety data, is a separate
+record. :meth:`~chemotion_api.elements.sample.Sample.get_chemical` returns it as a
+:class:`~chemotion_api.elements.sample.Chemical`. When the sample has none yet, ``exists`` is
+``False`` and ``save()`` creates it.
+
+.. code-block:: python
+
+    chemical = sample.get_chemical()
+    chemical.cas = '64-17-5'
+    chemical.data['location'] = 'Cabinet 3'
+    chemical.save()
+
+.. autoclass:: chemotion_api.elements.sample.Chemical
+    :members:
+
+Molecule names
+--------------
+
+A molecule is known by several names: IUPAC name, sum formula, and names users added. A sample
+shows one of them. :meth:`~chemotion_api.elements.sample.MoleculeManager.get_names` lists them,
+:meth:`~chemotion_api.elements.sample.MoleculeManager.add_name` adds one, and
+:attr:`~chemotion_api.elements.sample.Sample.molecule_name_id` chooses the one the sample shows.
+
+.. code-block:: python
+
+    molecules = instance.molecule()
+    name = molecules.add_name(sample.molecule['id'], 'Spirit')
+    sample.molecule_name_id = name.id
+    sample.save()
+
+.. autoclass:: chemotion_api.elements.sample.MoleculeName
+    :members:
 
 User labels
 -----------

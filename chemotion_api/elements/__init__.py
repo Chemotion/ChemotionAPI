@@ -8,10 +8,10 @@ from chemotion_api.elements.sample import Sample
 from chemotion_api.elements.reaction import Reaction
 from chemotion_api.elements.wellplate import Wellplate
 from chemotion_api.elements.research_plan import ResearchPlan
-from chemotion_api.elements.screen import Screen
-from chemotion_api.elements.cell_line import CellLine
 from chemotion_api.elements.device_description import DeviceDescription
-from chemotion_api.elements.sbmm import SbmmSample
+from chemotion_api.elements.screen import Screen
+from chemotion_api.elements.sbmm_sample import SbmmSample
+from chemotion_api.elements.cell_line import CellLine
 from chemotion_api.elements.registry import element_class
 from chemotion_api.generic_segments import GenericSegments
 from chemotion_api.connection import Connection, request_error
@@ -49,6 +49,8 @@ class ElementSet(list):
         self._fixed_length = fixed_length
         # Total number of elements on the server (X-Total header), None until a page is loaded
         self._length = None
+        # Whether a page has been loaded, i.e. whether `max_page` is the server's or the default.
+        self._loaded = False
 
     def set_iri_filter(self, iri):
         """
@@ -118,8 +120,27 @@ class ElementSet(list):
     def page(self, page: int):
         """
         The currently loaded page number (1-based). Setting it loads that page from the server.
+
+        Works before anything has been loaded too: the page count is learnt from the first load.
+
+        :raises IndexError: if the page does not exist. This used to be ignored silently — the set
+            stayed on its old page — and before the first load ``max_page`` was still 1, so every
+            page but the first was refused.
         """
-        self._set_page(page)
+        if self._fixed_length:
+            self._set_page(page)
+            return
+        if not isinstance(page, int) or isinstance(page, bool) or page < 1:
+            raise IndexError(f'Pages are numbered from 1; got {page!r}.')
+        # An empty result reports 0 pages, but its page 1 exists (and is empty).
+        if self._loaded and page > max(1, self.max_page):
+            raise IndexError(f'There are {self.max_page} page(s); page {page} does not exist.')
+        self._page = page
+        self.load_elements(**self._load_options)
+        if page > max(1, self.max_page):
+            # The server answers an out-of-range page with page 1, so that is what is loaded now.
+            self._page = 1
+            raise IndexError(f'There are {self.max_page} page(s); page {page} does not exist.')
 
     def _set_page(self, page: int) -> bool:
         if self._fixed_length:
@@ -233,6 +254,7 @@ class ElementSet(list):
             self._length = int(total) if total is not None else None
         except:
             pass
+        self._loaded = True
         self.clear()
         elements = res.json().get(self._get_result_key() + 's', [])
         for json_data in elements:
