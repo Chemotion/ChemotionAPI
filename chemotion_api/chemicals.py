@@ -1,85 +1,27 @@
-"""Chemical inventory data and safety data sheets of samples (M4.5).
+"""Safety data sheets and inventory labels (M4.5).
 
-A sample (or SBMM sample) kept in the chemical inventory has a ``Chemical`` record: its CAS number
-and ``chemical_data``, a one-entry list whose dict holds the inventory fields the UI's *Inventory*
-tab edits — ``status``, ``vendor``, ``amount``, storage location, dates, ``h_statements`` /
-``p_statements`` / ``pictograms``, and ``safetySheetPath`` (the saved safety data sheets). Inventory
-*labels* (prefix and counter for inventory sample labels) belong to collections.
+A sample's chemical record itself is :class:`chemotion_api.elements.sample.Chemical`, read with
+:meth:`Sample.get_chemical() <chemotion_api.elements.sample.Sample.get_chemical>`; its
+``data['safetySheetPath']`` lists the saved safety data sheets (see
+:attr:`~chemotion_api.elements.sample.Chemical.safety_sheets`). This module adds the vendor lookup,
+the manual and vendor SDS uploads, SDS download and extraction, and inventory *labels* (prefix and
+counter for inventory sample labels), which belong to collections.
 ``/api/v1/chemicals``, ``/api/v1/inventory``.
 """
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from chemotion_api.connection import Connection, request_error
 
+if TYPE_CHECKING:
+    from chemotion_api.elements.sample import Chemical, Sample
+
 #: Safety data sheet vendors the server can search.
 SDS_VENDORS = ('Merck', 'Thermofisher', 'All')
-
-
-@dataclass
-class Chemical:
-    """The chemical record of one sample. ``data`` is ``chemical_data[0]``."""
-    id: int | None = None
-    cas: str | None = None
-    data: dict[str, Any] = field(default_factory=dict)
-    sample_id: int | None = None
-    sbmm_sample_id: int | None = None
-
-    @property
-    def safety_sheets(self) -> list[str]:
-        """The paths of the saved safety data sheets (``/safety_sheets/<vendor>/<file>.pdf``)."""
-        return [path for entry in self.data.get('safetySheetPath') or [] for path in entry.values()]
-
-    @classmethod
-    def from_json(cls, data: dict[str, Any]) -> Chemical:
-        entries = data.get('chemical_data') or [{}]
-        return cls(id=data.get('id'), cas=data.get('cas'), data=dict(entries[0] or {}), sample_id=data.get('sample_id'),
-                   sbmm_sample_id=data.get('sequence_based_macromolecule_sample_id'))
-
-
-def _owner(element) -> dict[str, int]:
-    kind = getattr(element, 'element_type', None)
-    if getattr(element, 'id', None) is None:
-        raise ValueError('Save the sample first.')
-    if kind == 'sample':
-        return {'sample_id': element.id}
-    if kind == 'sequence_based_macromolecule_sample':
-        return {'sequence_based_macromolecule_sample_id': element.id}
-    raise ValueError('Only samples and SBMM samples have chemical data.')
-
-
-def load_chemical(session: Connection, element) -> Chemical | None:
-    """The element's chemical record, or ``None`` if it has none (``GET /api/v1/chemicals``)."""
-    res = session.get('/api/v1/chemicals', params=_owner(element))
-    if res.status_code == 401:
-        raise PermissionError('You need full read access to the sample to see its chemical data.')
-    if res.status_code != 200:
-        raise request_error(res, 'loading chemical data')
-    chemical = Chemical.from_json(res.json() or {})
-    return chemical if chemical.id is not None else None
-
-
-def save_chemical(session: Connection, element, chemical: Chemical) -> Chemical:
-    """Create the element's chemical record, or update it (``POST /chemicals/create``, ``PUT /chemicals``)."""
-    owner = _owner(element)
-    body: dict[str, Any] = owner | {'chemical_data': [chemical.data]}
-    if chemical.cas is not None:
-        body['cas'] = chemical.cas
-    if chemical.id is None:
-        if not chemical.cas:
-            raise ValueError('A new chemical record needs a CAS number.')
-        res = session.post('/api/v1/chemicals/create', data=body)
-    else:
-        res = session.put('/api/v1/chemicals', data=body)
-    if res.status_code == 401:
-        raise PermissionError('You may not edit this sample.')
-    if res.status_code not in (200, 201):
-        raise request_error(res, 'saving chemical data')
-    return load_chemical(session, element) or chemical
 
 
 def find_safety_sheets(session: Connection, name: str | None = None, molecule_id: int | None = None,
@@ -109,27 +51,29 @@ def find_safety_sheets(session: Connection, name: str | None = None, molecule_id
     return res.json()
 
 
-def save_vendor_safety_sheet(session: Connection, sample, chemical: Chemical, vendor_product: str) -> Chemical:
+def save_vendor_safety_sheet(session: Connection, sample: Sample, chemical: Chemical, vendor_product: str) -> Chemical:
     """Have the server download a vendor's safety data sheet and store it with the sample
     (``POST /api/v1/chemicals/save_safety_datasheet``).
 
+    :param chemical: the sample's record (:meth:`Sample.get_chemical`), with a CAS number.
     :param vendor_product: the key in ``chemical.data`` holding the vendor's product info, as
         :func:`find_safety_sheets` gave it (e.g. ``'merckProductInfo'`` with ``sdsLink``).
+    :return: the sample's chemical record afterwards.
     """
     if not chemical.cas:
         raise ValueError('The chemical needs a CAS number.')
-    owner = _owner(sample)
-    if 'sample_id' not in owner:
-        _sample_only()
+    sample_id = _sample_id(sample)
     res = session.post('/api/v1/chemicals/save_safety_datasheet',
-                       data={'sample_id': owner['sample_id'],
-                             'cas': chemical.cas, 'chemical_data': [chemical.data], 'vendor_product': vendor_product})
+                       data={'sample_id': sample_id, 'cas': chemical.cas, 'chemical_data': [chemical.data],
+                             'vendor_product': vendor_product})
+    if res.status_code == 401:
+        raise PermissionError('You may not edit this sample.')
     if res.status_code not in (200, 201):
         raise request_error(res, 'saving a vendor safety data sheet')
-    return load_chemical(session, sample) or chemical
+    return sample.get_chemical()
 
 
-def attach_safety_sheet(session: Connection, sample, file_path: str, vendor_name: str, vendor_product: str,
+def attach_safety_sheet(session: Connection, sample: Sample, file_path: str, vendor_name: str, vendor_product: str,
                         vendor_info: dict | None = None, cas: str | None = None) -> Chemical:
     """Store a safety data sheet you have as a file with the sample, as the *Inventory* tab's
     manual upload does (``POST /api/v1/chemicals/save_manual_sds``). The chemical record is created
@@ -138,12 +82,10 @@ def attach_safety_sheet(session: Connection, sample, file_path: str, vendor_name
     :param vendor_name: e.g. ``'Merck'``; the sheet is stored under ``/safety_sheets/<vendor_name>/``.
     :param vendor_product: the ``chemical_data`` key for the vendor info, e.g. ``'merckProductInfo'``.
     :param vendor_info: the product info to store there, e.g. ``{'productNumber': 'E7023'}``.
+    :return: the sample's chemical record afterwards.
     """
-    owner = _owner(sample)
-    if 'sample_id' not in owner:
-        _sample_only()
-    body: dict[str, Any] = {'sample_id': owner['sample_id'], 'vendor_name': vendor_name, 'vendor_product': vendor_product,
-                            'vendor_info': json.dumps(vendor_info or {})}
+    body: dict[str, Any] = {'sample_id': _sample_id(sample), 'vendor_name': vendor_name,
+                            'vendor_product': vendor_product, 'vendor_info': json.dumps(vendor_info or {})}
     if cas:
         body['cas'] = cas
     with open(file_path, 'rb') as f:
@@ -153,15 +95,19 @@ def attach_safety_sheet(session: Connection, sample, file_path: str, vendor_name
         raise PermissionError('You may not edit this sample.')
     if res.status_code not in (200, 201):
         raise request_error(res, f'storing the safety data sheet {file_path}')
-    return Chemical.from_json(res.json())
+    return sample.get_chemical()
 
 
-def _sample_only() -> None:
-    raise ValueError('Safety data sheets are stored for samples only.')
+def _sample_id(sample) -> int:
+    if getattr(sample, 'element_type', None) != 'sample':
+        raise ValueError('Safety data sheets are stored for samples only.')
+    if getattr(sample, 'is_new', False) or sample.id is None:
+        raise ValueError('Save the sample first.')
+    return sample.id
 
 
 def download_safety_sheet(session: Connection, path: str, file_path: str) -> str:
-    """Save a stored safety data sheet (a :attr:`Chemical.safety_sheets` path) to ``file_path``."""
+    """Save a stored safety data sheet (a :attr:`~chemotion_api.elements.sample.Chemical.safety_sheets` path) to ``file_path``."""
     res = session.get(path)
     if res.status_code != 200:
         raise request_error(res, f'downloading {path}')

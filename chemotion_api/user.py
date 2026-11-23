@@ -221,28 +221,6 @@ class User(abc.ABC):
             self._session.reset_user_labels()
         return [UserLabel.from_json(row) for row in self._session.user_labels]
 
-    def save_user_label(self, label: UserLabel) -> UserLabel:
-        """Create a user label, or update one of your own (``PUT /api/v1/user_labels/save_label``).
-
-        A label without an :attr:`~UserLabel.id` is created; one with an id must be yours. The
-        cached label list is dropped, so the next read includes the change.
-
-        :param label: the label; ``access_level`` ``0`` (the default) keeps it private.
-        :return: the label as the server stored it.
-        :raises ValueError: if the label has no title.
-        :raises PermissionError: if the label is not yours (the server answers 404 for that).
-        """
-        if not label.title:
-            raise ValueError('A user label needs a title.')
-        body = {k: v for k, v in label.to_dict().items() if v is not None}
-        res = self._session.put('/api/v1/user_labels/save_label', data=body)
-        if res.status_code == 404:
-            raise PermissionError(f'User label {label.id} is not one of yours.')
-        if res.status_code not in (200, 201):
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-        self._session.reset_user_labels()
-        return UserLabel.from_json(res.json())
-
     def is_admin(self):
         return self._is_admin(self.user_type)
 
@@ -383,10 +361,6 @@ class Person(User):
         super().__init__(session)
         self.samples_count: int | None = None
         self.reactions_count: int | None = None
-        self.cell_lines_count: int | None = None
-        self.device_descriptions_count: int | None = None
-        self.vessels_count: int | None = None
-        self.sequence_based_macromolecule_samples_count: int | None = None
         self.reaction_name_prefix: str | None = None
         self.layout: dict[str:str] = None
         self.unconfirmed_email: str | None = None
@@ -409,15 +383,6 @@ class Person(User):
             return '{}-{}'.format(self.initials, self.counters[type_name + 's'])
         if type_name == 'reaction':
             return '{}-R{}'.format(self.initials, self.counters[type_name + 's'])
-        if type_name == 'cell_line':
-            # As the UI labels a new cell line (ElementActions.generateEmptyCellLine).
-            return f'{self.initials}-C{self.cell_lines_count or 0}'
-        if type_name == 'sequence_based_macromolecule_sample':
-            # The server labels a new SBMM sample itself; this is what it will pick.
-            return f'{self.initials}-sbmmS{(self.sequence_based_macromolecule_samples_count or 0) + 1}'
-        if type_name == 'device_description':
-            # DeviceDescription.js in the UI.
-            return f'{self.initials}-Dev{(self.device_descriptions_count or 0) + 1}'
         return f"{self.initials}-{type_name}{self.counters.get(type_name + 's', self.counters.get(type_name, 0))}"
 
     def create_group(self, first_name: str, last_name: str, name_abbreviation: str,
@@ -468,8 +433,9 @@ class Device(User):
         super().__init__(session)
         self.is_super_device: bool | None = None
 
-    def get_jwt(self):
-        return DeviceManager(self._session).get_jwt_for_device(self.id)
+    # ``get_jwt()`` was removed in 401.0 along with ``DeviceManager.get_jwt_for_device``: it
+    # fetched ``/api/v1/devices/remote/jwt/:id``, a route no Chemotion release serves, so it
+    # could only ever raise. No replacement exists to point it at.
 
     def delete(self):
         url = f"/api/v1/admin/group_device/update/{self.id}"
@@ -522,10 +488,48 @@ class Admin(Person):
             else:
                 self.users.append(user)
 
-    def create_device(self, first_name: str, last_name: str, name_abbreviation: str) -> Device:
-        data = self._create_group_device(first_name=first_name, last_name=last_name,
-                                         name_abbreviation=name_abbreviation, rootType='Device')
-        return Device(self._session).populate(data)
+    def create_device(self, name: str, name_abbreviation: str, email: str | None = None,
+                      serial_number: str | None = None) -> Device:
+        """Create a device.
+
+        ``POST /api/v1/admin_devices``. Admin only.
+
+        **The signature changed in 401.0, because the old one could not work.** It previously took
+        ``first_name``/``last_name`` and posted to ``/api/v1/admin/group_device/create`` with
+        ``rootType: 'Device'`` — but ``Device`` has ``validates :name, presence: true`` (since at
+        least ELN 3.1.2) and that endpoint declares no ``name`` parameter, so Grape's ``declared``
+        dropped any attempt to supply one. Every call failed with
+        ``Validation failed: Name Please enter a name``. ``create_group`` is unaffected: groups
+        have no such validation and still go through that endpoint.
+
+        :param name: the device's display name — required by the server.
+        :param name_abbreviation: short label; must be unique across devices.
+        :param email: optional; the server generates one when omitted.
+        :param serial_number: optional.
+        :return: the created :class:`Device`.
+        :raises ConnectionError: if the server rejects it — including the case where it answers
+            ``201`` with an ``errors`` body, which a status check alone would read as success.
+        """
+        data: dict = {'name': name, 'name_abbreviation': name_abbreviation}
+        if email is not None:
+            data['email'] = email
+        if serial_number is not None:
+            data['serial_number'] = serial_number
+
+        res = self._session.post('/api/v1/admin_devices', data=data)
+        if res.status_code == 401:
+            raise PermissionError('Not allowed to create a device (only Admin)')
+        if res.status_code not in (200, 201):
+            raise ConnectionError(f'{res.status_code} -> {res.text}')
+        body = res.json()
+        # A rejected device comes back 201 with `errors` (the group endpoint uses `error`), so
+        # both spellings have to be checked or a failed create reads as a success.
+        if 'errors' in body or 'error' in body:
+            raise ConnectionError(f'{res.text}')
+        # `DeviceEntity` carries no `type`, but `is_device()` reads one — without this the
+        # returned object raises AttributeError on a basic accessor. `fetchDevices` adds it the
+        # same way.
+        return Device(self._session).populate(body.get('device', body) | {'type': 'Device'})
 
     def create_group(self, first_name: str, last_name: str, name_abbreviation: str) -> Group:
         data = self._create_group_device(first_name=first_name, last_name=last_name,
@@ -738,18 +742,6 @@ class Admin(Person):
         res = self._session.get(f'/api/v1/admin_devices/{_user_id(device)}')
         self._admin_check(res, f'loading device {_user_id(device)}')
         return res.json().get('device') or {}
-
-    def add_device(self, name: str, name_abbreviation: str, **fields) -> dict:
-        """Register an instrument as a device (``POST /api/v1/admin_devices``).
-
-        :param fields: ``email``, ``serial_number``, ``verification_status``, ``account_active``,
-            ``visibility``; configure collection afterwards with :meth:`update_device`.
-        """
-        allowed = {'email', 'serial_number', 'verification_status', 'account_active', 'visibility'}
-        if set(fields) - allowed:
-            raise ValueError(f'add_device takes {", ".join(sorted(allowed))}; set the rest with update_device.')
-        res = self._session.post('/api/v1/admin_devices', data={'name': name, 'name_abbreviation': name_abbreviation} | fields)
-        return self._device_answer(res, f'creating device {name_abbreviation}')
 
     def update_device(self, device, **fields) -> dict:
         """Change a device, its users and its data collector (``PUT /api/v1/admin_devices/:id``).
@@ -1009,31 +1001,19 @@ class DeviceManager:
     def __init__(self, session: Connection):
         self._session = session
 
-    def get_jwt_for_device(self, id: int):
-        user_url = f'/api/v1/devices/remote/jwt/{id}'
-        res = self._session.get(user_url)
-        if res.status_code == 401:
-            raise PermissionError('Not allowed to fetch JWT (Only for super devices or admins)')
-        elif res.status_code != 200:
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-
-        return res.json()['token']
-
-    def create_new_device(self, first_name: str, last_name: str, name_abbreviation: str, email: str = None) -> Device:
-        user_url = f'/api/v1/devices/remote/create'
-        data = {
-            'first_name': first_name,
-            'last_name': last_name,
-            'name_abbreviation': name_abbreviation,
-        }
-        if email is not None: data['email'] = email
-        res = self._session.post(user_url, data=data)
-        if res.status_code == 401:
-            raise PermissionError('Create device not is allowed! (Only for super devices or admins)')
-        elif res.status_code != 201 or res.json().get('error') is not None:
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-
-        return Device(self._session).populate(res.json())
+    # ``get_jwt_for_device`` and ``create_new_device`` were removed in 401.0. They posted to
+    # ``/api/v1/devices/remote/jwt/:id`` and ``/api/v1/devices/remote/create``, which exist in no
+    # Chemotion release (checked against 3.1.1, 3.1.2, 3.1.3, 4.0.0 and 4.0.1, and absent from the
+    # server's own Swagger). Every call raised ConnectionError on a 404.
+    #
+    # They are not repointable. There is no device-JWT route in any version. And ``POST
+    # /api/v1/devices`` describes an *instrument* (``title``/``code``/``types``/``samples``), not
+    # the device-*user* these took (``first_name``/``last_name``/``name_abbreviation``), so
+    # aiming them at it would change what the methods mean rather than repair them.
+    #
+    # To create a device, use :meth:`Admin.create_device`, which posts to
+    # ``/api/v1/admin_devices``, returns a typed :class:`Device`, and raises when the server
+    # reports an error in an otherwise-201 response.
 
     def add_users_to_group(self, group: Group, *users: User):
         return self.add_users_to_group_by_id(group, *[u.id for u in users if u.is_person()])

@@ -6,9 +6,11 @@
   "requirements": "",
   "conditions": "",
   "result": "",
-  "description": { "ops": [{ "insert": "\n" }] },
+  "description": {"ops": [{"insert": ""}]},
   "wellplates": [],
+  "user_labels": [],
   "research_plans": [],
   "segments": [],
-  "attachments": []
+  "can_update": true,
+  "component_graph_data": {"nodes": [], "edges": []}
 }

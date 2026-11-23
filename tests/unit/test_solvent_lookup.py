@@ -32,6 +32,15 @@ def test_a_substring_match_is_suggested():
     assert "Did you mean" in str(excinfo.value)
 
 
+def test_triethylamine_matches_eln_4_0_2():
+    """ELN 4.0.2 added Triethylamine (ComPlat/chemotion_ELN#3710, sample_const.rb), between
+    THF and Toluene. Values as the ELN ships them."""
+    assert get_solvent_info("Triethylamine") == {"smiles": "CCN(CC)CC", "density": 0.726}
+    names = list(get_solvent_list())
+    assert names.index("Triethylamine") == names.index("Tetrahydrofuran (THF)") + 1
+    assert names.index("Toluene") == names.index("Triethylamine") + 1
+
+
 def test_a_near_miss_is_suggested():
     """A typo should still land, via difflib rather than substring."""
     name = next(iter(get_solvent_list()))

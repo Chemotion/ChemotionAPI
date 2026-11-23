@@ -17,9 +17,10 @@ For full method signatures and all property keys, read `references/api.md`.
 ```python
 from chemotion_api import Instance
 
-instance = Instance('https://eln.example.org').test_connection().login('ABC', 'password')
-# test_connection() raises ConnectionError, login() raises PermissionError
-# instance.token is the JWT; Instance(url).login_token(jwt) reuses it
+instance = Instance('https://eln.example.org').test_connection().login_token('chemtoken_...')
+# test_connection() raises ConnectionError
+# API token: ELN > Account & Profile > Account > Authentication Token (needs 2FA). Instance(url, token=...) also works.
+# login(user, password) is deprecated (FutureWarning)
 ```
 
 ## Find things
@@ -93,7 +94,8 @@ s.properties['description'] = 'Stored at 4 °C'
 s.properties['purity'] = 0.98            # fraction, 0 < purity <= 1 (not percent)
 s.properties['density'] = 0.789          # g/ml; molarity is properties['molarity']['value']
 s.set_amount(2.5, QuantityUnit.Gram)     # preferred way to set an amount
-print(s.gram, s.mol, s.liter)            # converted amount (needs molecular weight / density / molarity)
+print(s.gram, s.mol, s.liter)            # converted amount; None without an amount or when it cannot be
+                                         # converted (mol needs a molecular weight, liter a density/molarity)
 s.save()
 ```
 
@@ -119,7 +121,8 @@ r.reactants.append(instance.get_sample(13))            # split, short label 'rea
 r.products.append(instance.get_sample(14))             # appends a COPY
 r.solvents.append(col.new_solvent('Toluene'))          # solvents are added as they are
 # r.starting_materials.append_no_split(sample) adds the sample itself (no split, no pre-saving);
-# like append it sets reaction, role and position and keeps/initializes the amount
+# like append it sets reaction, role and position and keeps/initializes the amount.
+# A sample the reaction already holds (any role, same id) raises ValueError; remove it first to move it.
 
 r.reference_sample = r.starting_materials[0]   # equivalents and yields are relative to it
 r.reactants[0].set_amount(1.5, QuantityUnit.Equivalent)
@@ -134,6 +137,12 @@ r.save()                                # recomputes equivalents and yields from
 
 The material lists are also `r.properties['starting_materials']` etc. Unknown status values are ignored
 on save, so check spelling.
+
+A sample's place in the reaction (`reference`, `equivalent`, `coefficient`, `position`, `waste`,
+`show_label`, the gas fields) is stored only by `r.save()`. Change it on the reaction's own material
+(`r.starting_materials[0].properties['coefficient'] = 2; r.save()`). On a sample loaded by itself, setting
+such a field raises `ValueError`, and `sample.save()` refuses while such a change is pending.
+A saved sample's `short_label` and a reaction's `rinchi_string` / `rinchi_web_key` cannot be set (`ValueError`).
 
 ### Gas-phase reactions
 
@@ -301,23 +310,23 @@ el.comments(); el.add_comment('text', section='properties')
 el.private_note(); el.set_private_note('only for me')
 for v in el.versions(): v.changes; v.revert()             # field-level history
 el.references(); el.add_reference(doi='10.1000/x'); col.references(); instance.doi_metadata(doi)
-col.update_user_labels(s1, s2, add=[label], remove=[])
+el.properties['user_labels'] = [label.id]; el.save()              # label = instance.save_user_label(...)
 ```
 
 ## More element types
 
 ```python
 screen = col.new_screen(); screen.add_wellplate(plate); screen.save()
-cl = col.new_cell_line(); cl.properties.update(material_names='HeLa', source='ATCC', amount=10**6,
-                                               unit='cell count', passage=3); cl.save(); cl.split(col)
+cl = col.new_cell_line('HeLa', 'ATCC'); cl.properties['passage'] = 3; cl.save()   # cl.material: shared
 dev = col.new_device_description(); dev.properties['vendor_company_name'] = 'Bruker'; dev.save()
-sb = col.new_sbmm_sample(); sb.use_uniprot('P61626'); sb.save()      # or fill sb.macromolecule
+sb = col.new_sbmm_sample('P61626'); sb.save()     # from a UniProt accession; sb.macromolecule is read-only
 tpl = instance.new_vessel_template('Flask 250', volume_amount=250, volume_unit='ml').save()
 col.new_vessel(tpl); col.new_vessels(tpl, 10, base_name='rack')     # vessels are saved immediately
 ```
 `col.get_screens() / get_cell_lines() / get_device_descriptions() / get_sbmm_samples() / get_vessels()`,
 `instance.get_screen(id)` etc. Splits: `col.split_samples(...)` (linked subsamples),
-`split_wellplates`, `split_device_descriptions`, `split_sbmm_samples`, `split_generic_elements`.
+`split_wellplates`, `split_device_descriptions`, `split_sbmm_samples`, `split_generic_elements`
+(cell lines have no server-side split in this client).
 `Sample.split()` alone builds an *unlinked* copy unless it is saved inside a reaction/wellplate.
 
 ## Molecules and structure search
@@ -332,7 +341,7 @@ res.samples; res.total('reaction')
 ## Data in and out
 
 ```python
-col.export('col.zip'); root.import_collections('col.zip')       # waits for the background job
+col.export_zip('col.zip'); instance.import_zip('col.zip')      # waits for the background job
 col.import_samples('samples.sdf')                                # SDF/MOL/CSV/XLSX
 col.export_elements('table.xlsx', s1, r1); col.export_reaction_smiles('rxn.csv', r1)
 archive = instance.create_report(r1, s1, file_name='Weekly'); archive.download('weekly.docx')
@@ -346,7 +355,7 @@ Collection export/import, sample import and reports run as server jobs; the meth
 ## Lab data
 
 ```python
-sample.chemical(); sample.save_chemical(Chemical(cas='64-17-5', data={'status': 'Available'}))
+chem = sample.get_chemical(); chem.cas = '64-17-5'; chem.data['status'] = 'Available'; chem.save()
 sample.attach_safety_sheet('sds.pdf', 'Merck', 'merckProductInfo', {'productNumber': 'E7023'})
 plan.create_measurements([{'sample': s, 'description': 'yield', 'value': 87.5, 'unit': '%'}])
 att.load_annotation(); att.save_annotation(svg)
@@ -363,7 +372,7 @@ gm.hub_templates(ElementType.SEGMENT); gm.import_hub_template(identifier, Elemen
 el.variations(); el.save_variations(rows); el.create_mtt_request(plate)
 admin = Instance(url).login(admin_user, pw).get_user()        # an Admin
 admin.find_users('Smith'); admin.update_user(u, account_active=False); admin.reset_password(u)
-admin.add_device('NMR', 'NMR1'); admin.jobs(); admin.disk_usage(); admin.matrices()
+admin.create_device('NMR', 'NMR1'); admin.jobs(); admin.disk_usage(); admin.matrices()
 instance.profile(); instance.set_short_label_counter('samples', 100); instance.create_api_token(otp)
 ```
 
@@ -378,6 +387,8 @@ instance.profile(); instance.set_short_label_counter('samples', 100); instance.c
 - Purity is a fraction (0-1), yields in variations are percent, equivalents are plain factors.
 - Appending to starting materials/reactants/products saves the source sample and creates a new sample.
   Use `append_no_split` if you must not create splits.
+- A sample can be in a reaction only once: adding one it already holds, in any role, raises `ValueError`.
+  A sample of another reaction is accepted, but on save the ELN gives this reaction a split with a new id.
 - Segment and property names are the human-readable labels, case-sensitive.
 - `ElementSet` (listings) cannot be indexed negatively; with an IRI filter it can only be iterated.
 - Most methods added for v4 act **immediately** (no `save()`): moving, sharing, deleting, splitting,
@@ -385,6 +396,12 @@ instance.profile(); instance.set_short_label_counter('samples', 100); instance.c
 - Background jobs (export, import, reports) have no job id; the client waits for the matching
   notification. Re-running one creates a second job.
 - `ValueError` from `save()` usually means a segment value does not fit its field; the message names the field.
+- Changes the ELN would drop without an error are refused with `ValueError`: reaction-link fields
+  (`reference`, `coefficient`, `waste`, ...) saved through `sample.save()` instead of `reaction.save()`, a
+  saved sample's `short_label`, a reaction's RInChI.
 - `requests.exceptions.RequestException` with `401` means the element is not visible to this user.
   Load/save/list failures raise `chemotion_api.connection.ChemotionRequestError` (a `RequestException`;
   `ChemotionServerError` for 5xx) with `status_code`, `url` and `context`, e.g. `saving sample 12`.
+- A refusal the server reports inside a success reply (`{"errors": ...}`, `{"error": ...}`,
+  `{"success": false}`) raises `chemotion_api.connection.ChemotionRejectedError` (also a `ConnectionError`
+  and a `ValueError`): the server's reason is in the message, the decoded reply in `.body`.

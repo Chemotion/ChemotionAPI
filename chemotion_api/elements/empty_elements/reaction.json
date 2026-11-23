@@ -31,7 +31,7 @@
   "purification": "",
   "purification_solvents": [],
   "reactants": [],
-  "rf_value": 0.00,
+  "rf_value": 0.0,
   "rxno": "",
   "role": "",
   "solvent": "",
@@ -50,11 +50,18 @@
   "type": "reaction",
   "can_update": true,
   "can_copy": false,
-  "variations": [
-  ],
+  "variations": [],
   "vessel_size": {
     "amount": null,
     "unit": "ml"
   },
-  "gaseous": false
+  "gaseous": false,
+  "concentration_mode": "solvents_only",
+  "reaction_type": "standard",
+  "lock_reaction_volume": false,
+  "ph_operator": "=",
+  "ph_value": null,
+  "volume": null,
+  "reactant_sbmm_samples": [],
+  "weight_percentage": false
 }

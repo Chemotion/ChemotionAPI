@@ -1,5 +1,6 @@
 """Wellplate element: a grid of wells, each optionally holding a :class:`~chemotion_api.elements.sample.Sample`."""
 import logging
+from chemotion_api.models import WellplatePropertiesModel
 from chemotion_api.elements.abstract_element import AbstractElement
 from chemotion_api.elements.registry import register_element_type
 
@@ -107,7 +108,7 @@ class Wellplate(AbstractElement):
     >>> from chemotion_api.collection import Collection
     >>> import logging
     >>> try:
-    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
     >>> except ConnectionError as e:
     >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
     >>> # Get the wellplate with ID 1
@@ -185,9 +186,9 @@ class Wellplate(AbstractElement):
         """
         for name, value in (('width', width), ('height', height)):
             if not isinstance(value, int) or isinstance(value, bool) \
-                    or not 0 <= value <= MAX_DIMENSION:
+                    or not 1 <= value <= MAX_DIMENSION:
                 raise ValueError(
-                    f"{name} must be an integer from 0 to {MAX_DIMENSION}; got {value!r}")
+                    f"{name} must be an integer from 1 to {MAX_DIMENSION}; got {value!r}")
 
         res = self._session.put(f'/api/v1/wellplates/resize/{self.id}',
                                 data={'id': self.id, 'width': width, 'height': height})
@@ -240,13 +241,15 @@ class Wellplate(AbstractElement):
                 row_label(y), Sample(self._generic_segments, self._session, element['sample']))
         return wells
 
-    def _parse_properties(self) -> dict:
+    _properties_model = WellplatePropertiesModel
+    _rich_text_fields = ('description',)
 
-        return {
+    def _parse_properties(self) -> dict:
+        return self._validated_properties({
             'name': cast(dict, self.json_data).get('name'),
             'description': cast(dict, self.json_data).get('description'),
             'user_labels': cast(dict, self.json_data).get('user_labels') or [],
-        }
+        })
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
         # The former `wells[:json_data.get('size')]` was always `[:None]`, i.e. a no-op copy:
@@ -317,15 +320,23 @@ class Wellplate(AbstractElement):
         attached to the wellplate, then ``PUT /api/v1/wellplates/import_spreadsheet/:id`` reads
         its samples and readouts into the wells. Use :meth:`download_template` for the layout.
 
+        Only the file is uploaded: the wellplate itself is not saved, so edits you have not
+        saved are not written. They are discarded, as the wellplate is refreshed from the
+        server's answer.
+
         :return: self, refreshed from the server's answer.
         :raises ValueError: if the server cannot read the spreadsheet.
         """
+        from chemotion_api.elements.attachments import Attachments
         wellplate_id = self._saved_id_for('spreadsheet import')
         before = {a['id'] for a in self.attachments}
-        self.attachments.add_file(file_path)
-        self.save()
-        self.load()
-        new = [a for a in self.attachments if a['id'] not in before]
+        upload = Attachments(self._session)
+        upload.add_file(file_path)
+        upload.save(wellplate_id, 'Wellplate')
+        attachments_data, record = self._load_data_from_server()
+        if attachments_data is None:
+            attachments_data = record.get('attachments') or []
+        new = [a for a in attachments_data if a['id'] not in before]
         if not new:
             raise ConnectionError(f'The spreadsheet was not attached to wellplate {wellplate_id}.')
         res = self._session.put(f'/api/v1/wellplates/import_spreadsheet/{wellplate_id}',
@@ -337,5 +348,6 @@ class Wellplate(AbstractElement):
         if res.status_code not in (200, 201):
             raise ConnectionError(f'{res.status_code} -> {res.text}')
         self._set_json_data(res.json()['wellplate'])
+        self._attachments = Attachments(self._session, attachments_data)
         self._wells = None
         return self

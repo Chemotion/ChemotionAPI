@@ -4,30 +4,121 @@ Defines the :class:`Sample` element together with its molecule, solvent and gas-
 and its quantity/equivalent calculations.
 """
 import json
+import math
+from dataclasses import dataclass
 import logging
 import re
+import contextlib
 import copy
 import warnings
 from enum import Enum
 from typing import Any, Literal, Optional, Self, cast
 
-
+from pydantic import ValidationError
 from requests import Response
 
 from chemotion_api.elements.utils.converter import convert_value_to_default
 from chemotion_api.elements.utils.equivalent import get_equivalent
 from chemotion_api.user import User
-from chemotion_api.elements.abstract_element import AbstractElement
+from chemotion_api.elements.abstract_element import AbstractElement, proposed_field, value_at
 from chemotion_api.elements.registry import register_element_type
 from chemotion_api.elements.components import Component, load_components, save_components
 from chemotion_api.elements.empty_elements import init_container
+from chemotion_api.models import SamplePropertiesModel, GasPhaseModel, UnitDictModel, validate_field
+from chemotion_api.utils.withheld import WITHHELD
 
 logger = logging.getLogger(__name__)
 from collections.abc import MutableMapping
 from chemotion_api.connection import Connection, request_error
 from chemotion_api.utils import UnitDict, FixedDict, PropertyDict
 from chemotion_api.utils.solvent_manager import get_solvent_list, get_solvent_info
-from chemotion_api.elements.utils import GasType, QuantityUnit, calculate_quantity, GasCalculations
+from chemotion_api.elements.utils import GasType, QuantityUnit, calculate_quantity, GasCalculations, vessel_volume_ml
+
+
+def _molarity_unit(raw):
+    """The stored molarity unit as a string, keeping ``None`` and :data:`WITHHELD` as they are."""
+    if raw is None or raw is WITHHELD:
+        return raw
+    return format(raw)
+
+
+class Chemical:
+    """A sample's inventory and safety record (the ELN's *Chemicals* tab).
+
+    Vendor, amounts, storage and safety data that the sample entity itself does not carry.
+    Get one with :meth:`Sample.get_chemical`; change :attr:`data` or :attr:`cas`, then :meth:`save`.
+
+    The server stores ``chemical_data`` as a list of mappings but only ever uses the first one
+    (its UI reads ``chemical_data[0]`` throughout), so that entry is exposed as :attr:`data`. Any
+    further entries are kept unchanged on save.
+
+    :ivar cas: the CAS number, or ``None``
+    :ivar data: the inventory fields (``vendor``, ``amount``, ``location``, ``safetySheetPath``, …)
+    """
+
+    def __init__(self, session: Connection, sample_id: int, payload: dict):
+        self._session = session
+        self.sample_id = sample_id
+        self._set(payload)
+
+    def _set(self, payload: dict) -> None:
+        self.id: int | None = payload.get('id')
+        self.cas: str | None = payload.get('cas')
+        entries = payload.get('chemical_data') or []
+        first = entries[0] if entries and isinstance(entries[0], dict) else {}
+        self.data: dict = dict(first)
+        self._further_entries: list = list(entries[1:])
+
+    @property
+    def exists(self) -> bool:
+        """Whether the server has a record yet. It answers an unsaved one (no ``id``) otherwise."""
+        return self.id is not None
+
+    def save(self) -> Chemical:
+        """Create the record if it does not exist yet, else update it; then re-read it.
+
+        :raises PermissionError: if you may not write this sample (401).
+        :raises ChemotionRequestError: on any other failure.
+        """
+        body: dict = {'sample_id': self.sample_id,
+                      'chemical_data': [self.data, *self._further_entries]}
+        if self.exists:
+            if self.cas is not None:
+                body['cas'] = self.cas
+            res = self._session.put('/api/v1/chemicals', data=body)
+        else:
+            body['cas'] = self.cas or ''        # required by the create route
+            res = self._session.post('/api/v1/chemicals/create', data=body)
+        if res.status_code == 401:
+            raise PermissionError(f'You may not change the chemical record of sample {self.sample_id}.')
+        if res.status_code not in (200, 201, 204):
+            raise request_error(res, f'saving the chemical record of sample {self.sample_id}')
+        # PUT answers with the result of `update!` (true), not the record.
+        self._set(_fetch_chemical(self._session, self.sample_id))
+        return self
+
+    @property
+    def safety_sheets(self) -> list[str]:
+        """The paths of the saved safety data sheets (``/safety_sheets/<vendor>/<file>.pdf``).
+
+        Download one with :meth:`chemotion_api.Instance.download_safety_sheet`.
+        """
+        return [path for entry in self.data.get('safetySheetPath') or [] if isinstance(entry, dict)
+                for path in entry.values()]
+
+    def __repr__(self) -> str:
+        return f'Chemical(sample_id={self.sample_id}, cas={self.cas!r}, exists={self.exists})'
+
+
+def _fetch_chemical(session: Connection, sample_id: int) -> dict:
+    res = session.get(f'/api/v1/chemicals?sample_id={sample_id}')
+    if res.status_code == 401:
+        raise PermissionError(
+            f'You may not read the chemical record of sample {sample_id}: it needs full read access '
+            f'(a share below detail level 10 is not enough).')
+    if res.status_code != 200:
+        raise request_error(res, f'loading the chemical record of sample {sample_id}')
+    return res.json() or {}
 
 
 class GasPhaseObj(FixedDict):
@@ -233,7 +324,13 @@ class Molecule(MutableMapping):
     def __getitem__(self, key: str):
         if hasattr(self._model, key):
             return getattr(self._model, key)
-        return self._model.model_extra.get(key) if self._model.model_extra else None
+        extra = self._model.model_extra or {}
+        if key in extra:
+            return extra[key]
+        # Raise, as a mapping must. `MutableMapping.__contains__` and `.get(key, default)` are
+        # both implemented by catching KeyError, so returning None here made `key in molecule`
+        # always True and `.get(key, default)` never return the default.
+        raise KeyError(key)
 
     def __setitem__(self, key: str, value):
         if hasattr(self._model, key):
@@ -275,6 +372,17 @@ class Molecule(MutableMapping):
         return self._model.clean()
 
 
+@dataclass(frozen=True)
+class MoleculeName:
+    """One of a molecule's names, as the ELN's name selector lists them.
+
+    :ivar id: the name's id — what a sample's :attr:`Sample.molecule_name_id` refers to
+    :ivar name: the name itself
+    :ivar description: e.g. ``"iupac_name"``, ``"sum_formular"`` or ``"defined by user"``
+    """
+    id: int
+    name: str
+    description: str | None = None
 #: The InChIKey of the server's placeholder molecule (``Molecule.find_or_create_dummy``).
 DUMMY_INCHIKEY = 'DUMMY'
 
@@ -286,6 +394,46 @@ class MoleculeManager:
 
     def __init__(self, session: Connection):
         self._session = session
+
+    def _names(self, molecule_id: int, new_name: str | None = None) -> list[MoleculeName]:
+        params = {'id': molecule_id} | ({'new_name': new_name} if new_name else {})
+        res = self._session.get('/api/v1/molecules/names', params=params)
+        if res.status_code != 200:
+            raise request_error(res, f'reading the names of molecule {molecule_id}')
+        body = res.json()
+        # An unknown molecule id answers a bare `[]` rather than `{"molecules": []}`.
+        rows = body.get('molecules', []) if isinstance(body, dict) else []
+        return [MoleculeName(id=row['value'], name=row['label'], description=row.get('desc'))
+                for row in rows]
+
+    def get_names(self, molecule_id: int) -> list[MoleculeName]:
+        """The names a molecule is known by (``GET /api/v1/molecules/names``).
+
+        :raises ChemotionRequestError: if the request fails. An unknown id gives ``[]``.
+        """
+        return self._names(molecule_id)
+
+    def add_name(self, molecule_id: int, name: str) -> MoleculeName:
+        """Add a user-defined name to a molecule and return it.
+
+        The server does this as a side effect of *reading* the names with ``new_name`` set; this
+        method is the explicit form of that.
+
+        The ELN strips surrounding whitespace, and treats ``;`` as a separator between several
+        names, so a name containing ``;`` is refused here.
+
+        :raises ValueError: if the name is empty or contains ``;``, or the molecule does not exist.
+        """
+        name = (name or '').strip()
+        if not name:
+            raise ValueError('A molecule name must not be empty.')
+        if ';' in name:
+            raise ValueError('The ELN splits a molecule name at ";", so it cannot be part of one.')
+        names = self._names(molecule_id, new_name=name)
+        match = next((n for n in names if n.name == name), None)
+        if match is None:
+            raise ValueError(f'Molecule {molecule_id} does not exist, or the server did not add the name.')
+        return match
 
     def create_molecule_by_smiles(self, smiles_code: str, density: float | None = None) -> Molecule:
         """
@@ -392,33 +540,6 @@ class MoleculeManager:
         data = res.json() or {}
         return [c for c in data.get('cas') or [] if c]
 
-    def get_names(self, molecule_id: int) -> list[dict]:
-        """
-        The names known for a molecule (IUPAC, synonyms, names users added), as
-        ``{'id', 'name', 'description', 'molecule_id'}`` dicts. ``GET /api/v1/molecules/names``.
-        A sample selects one by setting ``molecule_name_id`` to its ``id``.
-        """
-        return self._names({'id': molecule_id})
-
-    def add_name(self, molecule_id: int, name: str) -> list[dict]:
-        """
-        Adds a name of your own to a molecule; returns all its names afterwards (see :meth:`get_names`).
-        Editing or deleting names needs the molecule-editor right in the ELN, which this client
-        does not cover.
-        """
-        if not name:
-            raise ValueError('A molecule name cannot be empty.')
-        return self._names({'id': molecule_id, 'new_name': name})
-
-    def _names(self, params: dict) -> list[dict]:
-        res = self._session.get('/api/v1/molecules/names', params=params)
-        if res.status_code != 200:
-            raise ConnectionError(f'{res.status_code} -> {res.text}')
-        data = res.json()
-        rows = data.get('molecules') if isinstance(data, dict) else []
-        return [{'id': r.get('value'), 'name': r.get('label'), 'description': r.get('desc'),
-                 'molecule_id': r.get('mid')} for r in rows or []]
-
     def render_svg(self, molfile: str) -> str:
         """
         Renders a molfile's structure and stores it as its molecule's SVG
@@ -460,6 +581,24 @@ class MoleculeManager:
         return float(res.json())
 
 
+#: A sample's link to a reaction (the ELN's reactions_samples). The reaction's payload carries these;
+#: the sample routes do not store them, so they are saved only with the reaction.
+_REACTION_LINK_FIELDS = ('reference', 'equivalent', 'coefficient', 'position', 'show_label', 'waste',
+                         'gas_type', 'gas_phase_data', 'conversion_rate',
+                         'weight_percentage_reference', 'weight_percentage')
+
+
+def _comparable(value):
+    """A link field's value in a form that compares by content (enums by value, objects as dicts)."""
+    if isinstance(value, Enum):
+        return value.value
+    if hasattr(value, 'to_dict'):
+        return value.to_dict()
+    if hasattr(value, 'model_dump'):
+        return value.model_dump()
+    return copy.deepcopy(value)
+
+
 @register_element_type('sample', url='/api/v1/samples')
 class Sample(AbstractElement):
     """
@@ -471,7 +610,7 @@ class Sample(AbstractElement):
     >>> from chemotion_api import Instance
     >>> import logging
     >>> try:
-    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
     >>> except ConnectionError as e:
     >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
     >>> # Get the sample with ID 1
@@ -491,6 +630,8 @@ class Sample(AbstractElement):
     >>> s.save()
     """
 
+    _properties_model = SamplePropertiesModel
+
     material_types: list[Literal['starting_materials', 'reactants', 'products', 'solvents', 'purification_solvents']] = ['starting_materials', 'reactants', 'products', 'solvents', 'purification_solvents']
 
     json_data: dict
@@ -502,6 +643,12 @@ class Sample(AbstractElement):
         self._reaction = None
         self._role_in_reaction = None
         self._is_solvent = kwargs.pop("is_solvent", False)
+        # Reaction-link fields changed through `properties` since the reaction last saved them,
+        # and the value each had before its first change (to see a change being undone).
+        self._pending_link_set: set[str] = set()
+        self._link_baseline: dict[str, Any] = {}
+        # Set while the client itself writes a link field (see `_internal_link_write`).
+        self._internal_link_writes = 0
         super().__init__(*args, **kwargs)
 
     def _set_json_data(self, json_data):
@@ -510,6 +657,28 @@ class Sample(AbstractElement):
         self._svg_file = json_data.get('sample_svg_file')
         self.is_split = json_data.get('is_split', False)
         self._children_count = json_data.get('children_count', )
+
+
+    def _load_data_from_server(self):
+        """A reaction material loads from its reaction's record, not from ``/samples/:id``.
+
+        A material is the sample plus its link to the reaction (reference, equivalent,
+        coefficient, position, gas data, ...). The reaction's payload carries both; the sample's
+        own record has no link, so loading from it and saving would clear the reaction's
+        reference flag and stoichiometry. A sample the reaction no longer lists loads its own
+        record.
+        """
+        reaction = self._reaction
+        if isinstance(reaction, AbstractElement) and not reaction.is_new:
+            res = self._session.get(f"{reaction.get_url(reaction.element_type)}/{reaction.id}.json")
+            if res.status_code != 200:
+                raise request_error(res, f'loading reaction {reaction.id} of sample {self.id}')
+            record = reaction._record_from_detail(res.json())
+            for role in self.material_types:
+                for entry in record.get(role) or []:
+                    if entry.get('id') == self.id:
+                        return None, entry
+        return super()._load_data_from_server()
 
     @property
     def reaction(self):
@@ -539,14 +708,18 @@ class Sample(AbstractElement):
         :raises KeyError: If the sample carries no reaction reference
         """
         from chemotion_api import Instance
-        try:
-            # A new sample has no tag (None)
-            reaction_id = self.json_data['tag']['taggable_data']['reaction_id']
-        except (KeyError, IndexError, TypeError):
-            reaction_id = None
+        reaction_id = self._tagged_reaction_id()
         if reaction_id is None:
             raise KeyError(f'Could not find Reaction of Sample: {self}')
         return Instance(self._session).get_reaction(reaction_id)
+
+    def _tagged_reaction_id(self) -> int | None:
+        """The id of the reaction this sample's tag data points at — read locally, no request."""
+        try:
+            # A new sample has no tag (None); split() and copy() delete it.
+            return self.json_data['tag']['taggable_data']['reaction_id']
+        except (KeyError, IndexError, TypeError):
+            return None
 
     @property
     def role_in_reaction(self) -> Literal[
@@ -644,7 +817,7 @@ class Sample(AbstractElement):
         """
         The molecule of the sample
         """
-        self._load_if_partial()
+        self._require_loaded()
         if self._molecule is None:
             return Molecule({})
         return self._molecule
@@ -655,7 +828,9 @@ class Sample(AbstractElement):
         The molecule of the sample. Its density (or molarity) is copied to the sample if the sample has
         neither a density nor a molarity yet.
         """
-
+        # Load first: on a listed sample, reading `properties` below fetched the full record, and
+        # that re-parsed the server's molecule over the one just assigned.
+        self._ensure_loaded()
         self._molecule = molecule
         self._apply_molecule_density_or_molarity()
 
@@ -676,55 +851,78 @@ class Sample(AbstractElement):
             properties['molarity'] = {'value': molarity, 'unit': 'M'}
 
     @property
-    def vessel_size(self):
-        """The vessel size of the sample's reaction, or ``None`` if it has no reaction."""
+    def vessel_size(self) -> float | None:
+        """The volume of the sample's reaction vessel in **ml**, or ``None`` without one.
+
+        A number, because both consumers — the gas conversions and the gas-product equivalent —
+        do arithmetic with it. It used to return the stored ``{amount, unit}`` mapping, so a gas
+        calculation on a reaction loaded from the server divided a dict by a molecular weight,
+        and "is there a vessel size?" was always true.
+        """
         if self.reaction is None:
             return None
-        return self.reaction.properties['vessel_size']
+        return vessel_volume_ml(self.reaction.properties.get('vessel_size'))
 
     @property
-    def gram(self) -> float:
+    def gram(self) -> float | None:
         """
         The amount of the sample in gram. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Gram)
 
     @property
-    def mol(self) -> float:
+    def mol(self) -> float | None:
         """
         The amount of the sample in mol. For products the real amount is used, otherwise the target amount.
+        ``None`` when no amount is set or it cannot be converted (no molecular weight).
         """
         return self._get_converted_amount(QuantityUnit.Mole)
 
     @property
-    def liter(self) -> float:
+    def liter(self) -> float | None:
         """
         The amount of the sample in liter. For products the real amount is used, otherwise the target amount.
-        Needs a density or molarity unless the amount is given in liter.
+        Needs a density or molarity unless the amount is given in liter; ``None`` when no amount
+        is set or it cannot be converted.
         """
         return self._get_converted_amount(QuantityUnit.Liter)
 
-    def _get_converted_amount(self, output_unit):
-        """Converts the sample's target/real amount into ``output_unit`` using its physical data."""
+    def _get_converted_amount(self, output_unit) -> float | None:
+        """Converts the sample's target/real amount into ``output_unit`` using its physical data.
+
+        ``None`` when the amount has no value (a sample whose amount was never entered) or when the
+        conversion is not possible, so the three unit properties agree: before, ``gram`` passed the
+        missing value through, ``mol`` raised ``TypeError`` on it, and ``liter`` answered ``NaN``.
+        """
         key = 'real_amount' if self.role_in_reaction == 'products' else 'target_amount'
+        value = self.properties[key]['value']
+        if value is None:
+            return None
         gp: GasPhaseObj = self.properties.get('gas_phase_data')
         if gp is not None:
             gas_attres = {'temperature_in_k': gp.temperature_in_k, 'ppm': gp.ppm, 'time_in_h': gp.time_in_h}
 
         else:
             gas_attres = {}
-        return calculate_quantity(
-            current_value=self.properties[key]['value'],
-            current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
-            output_unit=output_unit,
-            molecular_weight=self.molecule['molecular_weight'],
-            purity=self.properties['purity'],
-            molarity=self.properties['molarity']['value'],
-            density=self.properties['density'],
-            gas_type=self.gas_type,
-            vessel_size=self.vessel_size,
-            **gas_attres
-        )
+        try:
+            converted = calculate_quantity(
+                current_value=value,
+                current_unit=QuantityUnit.from_string(self.properties[key]['unit']),
+                output_unit=output_unit,
+                molecular_weight=self.molecule['molecular_weight'],
+                purity=self.properties['purity'],
+                molarity=self.properties['molarity']['value'],
+                density=self.properties['density'],
+                # The getter already reports OFF for a sample outside any reaction, so a detached
+                # sample never feeds a `None` vessel size into the gas arithmetic.
+                gas_type=self.gas_type,
+                vessel_size=self.vessel_size,
+                **gas_attres
+            )
+        except KeyError:  # the conversion needs a molecular weight the molecule does not have
+            return None
+        return None if math.isnan(converted) else converted  # NaN: not convertible
 
     @property
     def equivalent(self) -> float:
@@ -783,15 +981,25 @@ class Sample(AbstractElement):
         """
         The gas role of the sample within a gas-schema reaction.
 
-        Resets to :attr:`GasType.OFF` when the sample has no reaction.
+        Returns what the server sent. **Reading this makes no request and changes nothing** —
+        until 401.0 it did both: it loaded the sample's linked reaction and, when there was none,
+        wrote ``GasType.OFF`` back through :meth:`set_gas_type`. So reading one property issued a
+        request and mutated the sample, and it *failed* whenever the linked reaction contained a
+        field this client could not parse — an error with no relation to the value being read.
+        A downstream consumer had to subclass ``Sample`` to stop it.
+
+        A sample that belongs to no reaction still reads as :attr:`GasType.OFF`, as before — a gas
+        role means nothing outside a reaction, and the unit and equivalent rules key off it. That
+        is decided from local data only: a sample attached to a reaction object, or whose tag
+        names one, reports its stored role; anything else (a new sample, or one made by
+        :meth:`split` or :meth:`copy`, which drop the tag) reports OFF. The stored value is left
+        alone; use :meth:`set_gas_type` to change it.
 
         :return: The current :class:`chemotion_api.elements.sample.GasType`
         """
-        gt = self._properties.get('gas_type', GasType.OFF)
-        if self.reaction is None and gt is not GasType.OFF:
-            self.set_gas_type(GasType.OFF)
+        if self._reaction is None and self._tagged_reaction_id() is None:
             return GasType.OFF
-        return gt
+        return self._properties.get('gas_type', GasType.OFF)
 
     @property
     def reference(self) -> bool:
@@ -839,13 +1047,67 @@ class Sample(AbstractElement):
         origin_gas_type = self.gas_type
         self._properties['gas_type'] = gas_type
         if has_change and gas_type == GasType.GAS:
-            self.properties['gas_phase_data'] = GasPhaseObj(self)
+            with self._internal_link_write():
+                self.properties['gas_phase_data'] = GasPhaseObj(self)
         if has_change and origin_gas_type == GasType.FEEDSTOCK:
             cat_sample = self.reaction.get_catalyst()
             if cat_sample is not None:
                 cat_sample.gas_type = GasType.OFF
         if has_change and reaction_update:
             self.reaction.update_amount()
+
+    @property
+    def molecule_name_id(self) -> int | None:
+        """The id of the :class:`MoleculeName` chosen as this sample's molecule name.
+
+        See :meth:`MoleculeManager.get_names` and :meth:`MoleculeManager.add_name`; set it to one
+        of those ids and :meth:`save`.
+        """
+        data = self.json_data or {}
+        if 'molecule_name_id' in data:          # set locally, not yet reloaded
+            return data['molecule_name_id']
+        # The server accepts `molecule_name_id` but returns the choice as `molecule_name_hash`.
+        chosen = data.get('molecule_name_hash')
+        return chosen.get('value') if isinstance(chosen, dict) else None
+
+    @molecule_name_id.setter
+    def molecule_name_id(self, name_id: int | None) -> None:
+        self._ensure_loaded()
+        cast(dict, self.json_data)['molecule_name_id'] = name_id
+
+    def get_chemical(self) -> Chemical:
+        """Fetch this sample's inventory and safety record (``GET /api/v1/chemicals``).
+
+        Always returns a :class:`Chemical`; when the sample has none yet, its
+        :attr:`~Chemical.exists` is ``False`` and :meth:`~Chemical.save` creates it.
+
+        :raises ValueError: if the sample has not been saved yet.
+        :raises PermissionError: if you lack full read access to the sample.
+        """
+        if self.is_new:
+            raise ValueError('Save the sample before reading its chemical record.')
+        return Chemical(self._session, cast(int, self.id), _fetch_chemical(self._session, cast(int, self.id)))
+
+    def attach_safety_sheet(self, file_path: str, vendor_name: str, vendor_product: str,
+                            vendor_info: dict | None = None, cas: str | None = None) -> Chemical:
+        """Store a safety data sheet file with this sample, as the *Inventory* tab's manual upload
+        does; creates the chemical record if there is none. See
+        :func:`chemotion_api.chemicals.attach_safety_sheet`.
+
+        :return: the chemical record afterwards (:meth:`get_chemical`).
+        """
+        from chemotion_api import chemicals
+        return chemicals.attach_safety_sheet(self._session, self, file_path, vendor_name, vendor_product,
+                                             vendor_info, cas)
+
+    def save_vendor_safety_sheet(self, chemical: Chemical, vendor_product: str) -> Chemical:
+        """Have the server download a vendor's safety data sheet for this sample. See
+        :func:`chemotion_api.chemicals.save_vendor_safety_sheet`.
+
+        :return: the chemical record afterwards (:meth:`get_chemical`).
+        """
+        from chemotion_api import chemicals
+        return chemicals.save_vendor_safety_sheet(self._session, self, chemical, vendor_product)
 
     def load_image(self) -> Response:
         """
@@ -876,7 +1138,9 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save(True)
+        # The sample's own fields only: link fields still pending belong to its current reaction,
+        # which saves them; the subsample gets its own place in the reaction it joins.
+        self._save_own_fields(True)
         split_sample = copy.deepcopy(self.json_data)
         split_sample['parent_id'] = self.id
         split_sample['id'] = None
@@ -902,7 +1166,7 @@ class Sample(AbstractElement):
         :return: A new sample object
         :rtype: :class:`chemotion_api.elements.sample.Sample`
         """
-        self.save()
+        self._save_own_fields()
         split_sample = copy.deepcopy(self.json_data)
         split_sample['id'] = None
 
@@ -948,6 +1212,8 @@ class Sample(AbstractElement):
             """
             if val is None:
                 return None, None
+            if val is WITHHELD:
+                return WITHHELD, WITHHELD
 
             def bound(text: str):
                 text = text.strip()
@@ -997,7 +1263,7 @@ class Sample(AbstractElement):
             'equivalent': self.json_data.get('equivalent'),
             'coefficient': self.json_data.get('coefficient', 1),
             'reaction_description': self.json_data.get('reaction_description'),
-            'molarity': {'unit': format(self.json_data.get('molarity_unit')) if self.json_data.get('molarity_unit') is not None else None, 'value': self.json_data.get('molarity_value')},
+            'molarity': {'unit': _molarity_unit(self.json_data.get('molarity_unit')), 'value': self.json_data.get('molarity_value')},
             'molecular_mass': self.json_data.get('molecular_mass'),
             'inventory_sample': self.json_data.get('inventory_sample'),
             'position': self.json_data.get('position'),
@@ -1190,6 +1456,18 @@ class Sample(AbstractElement):
                 return default_set + [QuantityUnit.Mole]
         return default_set + [QuantityUnit.Mole]
 
+    def _update_equivalents_after_own_change(self):
+        """Recompute what a change to this sample's amount, purity or coefficient affects.
+
+        Every equivalent is relative to the reference alone, so a change to any other sample moves
+        only that sample's own equivalent; only a change to the reference moves all of them.
+        Recomputing the whole reaction on every change made adding n materials cost n full passes.
+        """
+        if self.properties['reference']:
+            self.reaction.update_equivalent()
+        else:
+            self.update_equivalent()
+
     def update_equivalent(self):
         """
         Recomputes the molar equivalent of the sample relative to its reaction's reference sample.
@@ -1220,8 +1498,14 @@ class Sample(AbstractElement):
             if unit not in self.allowed_quantity_units():
                 raise KeyError(
                     f'The value {unit.value}  cannot be set for this sample. This is most likely due to the role of this sample in the reaction.')
+            ref_mol = self.reaction.reference_sample.mol
+            if ref_mol is None:
+                # Checked before the write, so a refused equivalent does not stay on the sample
+                # next to its old amount.
+                raise ValueError('The equivalent cannot be set: the reference sample has no amount in mol '
+                                 '(no amount entered, or no molecular weight to convert it).')
             self._properties['equivalent'] = value
-            self.set_amount(self.reaction.reference_sample.mol * value, QuantityUnit.Mole)
+            self.set_amount(ref_mol * value, QuantityUnit.Mole)
         elif self.properties['reference']:
             self._properties['equivalent'] = 1
         else:
@@ -1314,14 +1598,96 @@ class Sample(AbstractElement):
             # burying the real equivalent failures this except clause exists to surface.
             if self.reaction is not None:
                 try:
-                    self.reaction.update_equivalent()
+                    self._update_equivalents_after_own_change()
                 except (KeyError, ValueError, TypeError, ZeroDivisionError, AttributeError) as e:
                     # Was a bare `pass`. Failing to recompute equivalents is not fatal — the amount
                     # was still set — but it leaves the reaction's stoichiometry stale, and silence
                     # meant nobody found out until the numbers were wrong on the server.
                     logger.warning('The equivalents of the reaction could not be updated: %r', e)
 
+    @property
+    def _pending_link_fields(self) -> set[str]:
+        """Reaction-link fields written through ``properties`` since the last reaction save."""
+        return self._pending_link_set
+
+    def _clear_pending_link_fields(self) -> None:
+        """The reaction saved this material's link fields: nothing is pending any more."""
+        self._pending_link_set.clear()
+        self._link_baseline.clear()
+
+    @contextlib.contextmanager
+    def _internal_link_write(self):
+        """A link field the client sets itself (a material's position, the gas data of a gas),
+        also while the sample is not yet one of its reaction's materials."""
+        self._internal_link_writes += 1
+        try:
+            yield
+        finally:
+            self._internal_link_writes -= 1
+
+    def _is_own_material(self) -> bool:
+        """Whether this object is one of its reaction's materials, the objects ``reaction.save()``
+        serialises. Not true of a sample loaded on its own, nor through :attr:`reaction`, which
+        builds a new reaction holding other material objects."""
+        reaction = self._reaction
+        materials = getattr(reaction, '_properties_data', None) or {}
+        return any(m is self for role in self.material_types for m in (materials.get(role) or []))
+
+    def save(self, load_after_save: bool = False):
+        """Save the sample.
+
+        :raises ValueError: if a field of the sample's place in a reaction (``equivalent``,
+            ``reference``, ``coefficient``, …) was changed: the sample routes do not store those, so
+            the change would be lost without an error. Save the reaction instead.
+        """
+        if self._pending_link_fields:
+            raise ValueError(
+                f'{", ".join(sorted(self._pending_link_fields))} belong to this sample\'s place in a '
+                f'reaction and are saved with the reaction: call reaction.save(), not sample.save().')
+        self._save_own_fields(load_after_save)
+
+    def _save_own_fields(self, load_after_save: bool = False) -> None:
+        """Save the sample's own fields. Pending link fields are not saved here (the sample routes
+        do not store them) and stay pending, with their values, for the reaction's save."""
+        pending = {field: self._properties.get(field) for field in self._pending_link_fields}
+        was_new = self.is_new
+        metrics = self.properties.get('metrics') if was_new else None
+        # Reload only after the last request, not after the create and again after the update.
+        super().save(load_after_save and not metrics)
+        if metrics and metrics != self.json_data.get('metrics'):
+            # The create route does not take `metrics` (the update route does), so a new sample
+            # would silently get the default display units.
+            self.properties['metrics'] = metrics
+            super().save(load_after_save)
+        elif metrics and load_after_save:
+            self.load()
+        if load_after_save and pending:
+            # The reload read the stored link values; the changes are still to be saved.
+            self._properties.update(pending)
+
     def on_properties_change(self, dict_obj, name, value):
+        """Apply a property change. A reaction-link field may only be changed on one of its
+        reaction's materials, where ``reaction.save()`` stores it; it is pending until then, unless
+        it is set back to the value it had."""
+        field = name[0]
+        if field not in _REACTION_LINK_FIELDS:
+            return self._apply_property_change(dict_obj, name, value)
+        if not self._internal_link_writes and not self._is_own_material():
+            raise ValueError(
+                f'{field!r} belongs to this sample\'s place in a reaction, which only the reaction '
+                f'saves. Change it on the reaction\'s material (e.g. reaction.starting_materials[i]) '
+                f'and call reaction.save().')
+        before = _comparable(self._properties.get(field))
+        result = self._apply_property_change(dict_obj, name, value)
+        baseline = self._link_baseline.setdefault(field, before)
+        if _comparable(self._properties.get(field)) == baseline:
+            self._pending_link_set.discard(field)
+            del self._link_baseline[field]
+        else:
+            self._pending_link_set.add(field)
+        return result
+
+    def _apply_property_change(self, dict_obj, name, value):
         """
         Validates and applies a change to one of the sample's properties.
 
@@ -1335,42 +1701,16 @@ class Sample(AbstractElement):
         :return: ``False``, as the handler applies the change itself
         :raises ValueError: If the new value violates a constraint (e.g. purity or coefficient range)
         """
-        from pydantic import BaseModel, ValidationError
-        from chemotion_api.models import SamplePropertiesModel
+        # Fields the sample routes do not store (they are dropped without an error), checked
+        # against ELN v4.0.1's declared parameters (2026-11-14).
+        top = name[0]
+        if top == 'short_label' and not self.is_new:
+            raise ValueError("A saved sample's short label cannot be changed: the ELN ignores it on update.")
+        # Only the field being written is copied and validated (see `validate_field`). A whole
+        # field is the new value outright; a nested write is applied to a copy of that one field.
+        proposed = proposed_field(self._properties.get(top), name, value[-1])
+        coerced_val = value_at(validate_field(SamplePropertiesModel, top, proposed), name[1:])
 
-        # 1. Build proposed dictionary state
-        current_dict = {}
-        for k, v in self._properties.items():
-            if hasattr(v, 'to_dict'):
-                current_dict[k] = v.to_dict()
-            elif isinstance(v, list):
-                current_dict[k] = list(v)
-            else:
-                current_dict[k] = v
-
-        proposed_dict = copy.deepcopy(current_dict)
-        temp = proposed_dict
-        for key in name[:-1]:
-            if key not in temp:
-                temp[key] = {}
-            temp = temp[key]
-        temp[name[-1]] = value[-1]
-
-        # 2. Validate proposed dict using SamplePropertiesModel
-        validated = SamplePropertiesModel.model_validate(proposed_dict)
-
-        # 3. Retrieve coerced value from validated model
-        coerced_val = validated
-        for key in name:
-            if isinstance(coerced_val, BaseModel):
-                coerced_val = getattr(coerced_val, key)
-            elif isinstance(coerced_val, dict):
-                coerced_val = coerced_val[key]
-            else:
-                coerced_val = getattr(coerced_val, key)
-
-        from chemotion_api.models import GasPhaseModel, UnitDictModel
-        from chemotion_api.utils import UnitDict
         if isinstance(coerced_val, GasPhaseModel):
             coerced_val = GasPhaseObj(self, coerced_val.model_dump())
         elif isinstance(coerced_val, UnitDictModel):
@@ -1419,7 +1759,7 @@ class Sample(AbstractElement):
             else:
                 self._properties[name[-1]] = None if value[-1] is None else float(value[-1])
                 if self.reaction is not None:
-                    self.reaction.update_equivalent()
+                    self._update_equivalents_after_own_change()
                 return False
         if name[-1] == 'coefficient':
             if value[-1] is not None and value[-1] <= 0:
@@ -1427,7 +1767,7 @@ class Sample(AbstractElement):
             else:
                 self._properties[name[-1]] = value[-1]
                 if self.reaction is not None:
-                    self.reaction.update_equivalent()
+                    self._update_equivalents_after_own_change()
                 return False
         if name[-1] == 'reference' and self.reaction is not None:
             if value[-1]:

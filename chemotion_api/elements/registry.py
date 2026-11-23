@@ -31,7 +31,8 @@ class UnknownElementType(TypeError):
     def __init__(self, name: str):
         self.name = name
         known = ', '.join(sorted(_REGISTRY)) or 'none'
-        super().__init__(f'Element type "{name}" is not supported by this client (supported: {known})')
+        super().__init__(f'Element type "{name}" is a built-in Chemotion type this client does not model, '
+                         f'so it cannot be loaded. Supported: {known}, and LabIMotion generic types.')
 
 
 @dataclass(frozen=True)

@@ -40,17 +40,35 @@ def wait_for_notification(session: Connection, subjects: Iterable[str], seen: se
 
     :param what: the job, for the timeout message (e.g. ``'The export of "Project A"'``).
     :raises TimeoutError: when nothing arrives within ``timeout`` seconds (the job may still run).
+        It quotes any new notification on the channel that did not match, because a change in the
+        server's wording looks exactly like a job that never finished.
     """
     subjects = tuple(subjects)
     deadline = time.monotonic() + timeout
+    unmatched: dict[int, str] = {}
     while True:
         for message in notifications(session, subjects):
-            if message['id'] not in seen and match(message):
+            if message['id'] in seen:
+                continue
+            if match(message):
                 return message
+            unmatched[message['id']] = message_text(message)
         if time.monotonic() >= deadline:
+            hint = ''
+            if unmatched:
+                quoted = '; '.join(repr(t) for t in list(unmatched.values())[:3])
+                hint = (f' {len(unmatched)} other notification(s) arrived on this channel, none '
+                        f'about this job: {quoted}. If one of them is, the server\'s wording has '
+                        'changed; please open an issue.')
             raise TimeoutError(f'{what} did not report back within {timeout} s; '
-                               'it may still be running on the server.')
+                               f'it may still be running on the server.{hint}')
         time.sleep(poll_interval)
+
+
+def message_text(message: dict[str, Any]) -> str:
+    """The human-readable text of a notification."""
+    content = message.get('content') or {}
+    return str(content.get('data') or '') if isinstance(content, dict) else str(content)
 
 
 def server_path(url: str) -> str:

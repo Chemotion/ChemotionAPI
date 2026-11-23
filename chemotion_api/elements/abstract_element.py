@@ -15,6 +15,9 @@ from jsonschema.validators import validate
 
 from chemotion_api.elements.analyses_manager import AnalysesManager
 
+from chemotion_api.utils.withheld import mark_withheld
+from pydantic import BaseModel, ValidationError
+from chemotion_api.models import validate_field
 from chemotion_api.connection import Connection, request_error
 from chemotion_api.user import UserLabel
 from chemotion_api.elements.attachments import Attachments, MutableAttachments
@@ -48,7 +51,7 @@ class Dataset(dict):
     >>> from chemotion_api import Instance
     >>> import logging
     >>> try:
-    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
     >>> except ConnectionError as e:
     >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
     >>> s = instance.get_sample(1)
@@ -237,7 +240,7 @@ class Analyses(AttrAccessMixin, dict):
         >>> from chemotion_api import Instance
         >>> import logging
         >>> try:
-        >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+        >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
         >>> except ConnectionError as e:
         >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
         >>> s = instance.get_sample(1)
@@ -305,7 +308,7 @@ class AnalysesList(list):
     >>> from chemotion_api import Instance
     >>> import logging
     >>> try:
-    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login('<USER>', "<PASSWORD>")
+    >>>     instance = Instance('http(d)://xxx.xxx.xxx').test_connection().login_token('<API TOKEN>')
     >>> except ConnectionError as e:
     >>>     logging.error(f"A connection to Chemotion ({instance.host_url}) cannot be established")
     >>> s = instance.get_sample(1)
@@ -487,6 +490,54 @@ class Segment(dict):
         return self.field(segment, layer, field).units()
 
 
+def _plain(value):
+    """A validated value as properties hold it: nested models become plain dicts."""
+    return value.model_dump() if isinstance(value, BaseModel) else value
+
+
+
+def flattened_field_error(path: list[str]) -> ValueError:
+    """Explain a nested write into a property field that is stored as a single value."""
+    field = path[0]
+    return ValueError(
+        f"{field!r} is stored as a single value, not a mapping, so "
+        f"properties[{field!r}][{path[-1]!r}] cannot be set. Assign the whole field instead, "
+        f"e.g. properties[{field!r}] = <value>.")
+
+
+def proposed_field(source: Any, path: list[str], value: Any) -> Any:
+    """The property field ``source`` as it would be after writing ``value`` at ``path``.
+
+    ``path`` is the full key chain, field first (``['vessel_size', 'amount']``). With a single key
+    the new value is the field outright. Otherwise the write is applied to a deep copy of the
+    field, so the stored value is untouched until the result has been validated. Missing
+    intermediate mappings are created; walking into a scalar raises.
+
+    :raises ValueError: if the path walks into a value that is not a mapping
+    """
+    if len(path) == 1:
+        return value
+    proposed = copy.deepcopy(source.to_dict() if hasattr(source, 'to_dict') else source)
+    if proposed is None:
+        proposed = {}
+    temp = proposed
+    for key in path[1:-1]:
+        if not isinstance(temp, dict):
+            raise flattened_field_error(path)
+        temp = temp.setdefault(key, {})
+    if not isinstance(temp, dict):
+        raise flattened_field_error(path)
+    temp[path[-1]] = value
+    return proposed
+
+
+def value_at(field_value: Any, path: list[str]) -> Any:
+    """Walk a validated field (a model, a dict or a mix) down ``path`` (the keys below the field)."""
+    for key in path:
+        field_value = field_value[key] if isinstance(field_value, dict) else getattr(field_value, key)
+    return field_value
+
+
 class AbstractElement:
     """
     This abstract element is the basis for all chemotion-api elements. It provides all the necessary functions and properties to work with these elements.
@@ -504,13 +555,16 @@ class AbstractElement:
                  id: int | None = None, element_type: str | None = None, avoid_load: bool = False):
         # Elements from a listing or search are only partially loaded; they load fully on first data access
         self._is_partial = False
+        # Like `_is_partial`, but kept until a load succeeds: `load()` clears `_is_partial` before
+        # its request, so after a failed load only this still says the data came from a listing.
+        self._listed_unloaded = False
         self._attachments: Attachments | None = None
         self._generic_segments = generic_segments
         self._session = session
 
         self._short_label = None
         self._properties = None
-        self._analyses = None
+        self._analyses: AnalysesList | None = None
         self._segments = None
         # Name of element instance
         self._name: str = ''
@@ -576,6 +630,26 @@ class AbstractElement:
         return self._short_label
 
     @property
+    def is_loaded(self) -> bool:
+        """Whether the element's full record has been fetched from the server.
+
+        An element from a listing starts with part of its data and fetches the rest on first use
+        of its properties, segments, analyses or attachments; :meth:`load` fetches it explicitly.
+        A new (unsaved) element is complete by definition.
+        """
+        return self.is_new or self._data_loaded
+
+    @property
+    def is_restricted(self) -> bool:
+        """Whether the server withheld fields of this element from you.
+
+        True when the element reached you through a share below the full detail level (10). The
+        withheld fields read as :data:`~chemotion_api.utils.withheld.WITHHELD`, and :meth:`save`
+        refuses the element.
+        """
+        return bool((self.json_data or {}).get('is_restricted'))
+
+    @property
     def can_update(self) -> bool | None:
         """Whether the server says *this user* may write this element.
 
@@ -613,6 +687,16 @@ class AbstractElement:
         """
         self._ensure_loaded()
         return PropertyDict(self.on_properties_change, self._properties)
+
+    def _require_loaded(self) -> None:
+        """Like :meth:`_ensure_loaded`, but for an element from a listing a failed load raises
+        instead of handing out the listing's incomplete data, as analyses, segments and attachments
+        did before. An element built from a parent's payload carries its data already, so a failed
+        fetch of its own record (e.g. one you may not read) is not an error."""
+        self._ensure_loaded()
+        if self._listed_unloaded and self._load_failed and not self._data_loaded:
+            raise ConnectionError(f'The full record of {self.element_type} {self.id} could not be '
+                                  f'loaded; fetch the element again.')
 
     def _ensure_loaded(self) -> None:
         """Fetch the element's full record if only the list payload has been seen so far.
@@ -662,7 +746,7 @@ class AbstractElement:
         """
         # `properties` fetches the full record on first access; reading `_properties` directly
         # skipped that, so an element that had not been loaded reported no labels at all.
-        label_ids = (self.properties or {}).get('user_labels') or []
+        label_ids = self.properties.get('user_labels') or []
         if not label_ids:
             return []
         by_id = {row.get('id'): row for row in self._session.user_labels}
@@ -673,8 +757,15 @@ class AbstractElement:
 
     @property
     def _properties(self) -> dict:
+        # Every read, including the element's own writers, sees the full record: a listed
+        # (partial) element and one built from a parent's payload (a wellplate's well, say) both
+        # load here first. Writing before that load would be lost, because the load re-parses
+        # the properties.
         self._load_if_partial()
-        return self._properties_data
+        self._ensure_loaded()
+        # Set by `_set_json_data` before anything reads it; `None` only on an element that was
+        # never given data, which no accessor is reached on.
+        return cast(dict, self._properties_data)
 
     @_properties.setter
     def _properties(self, properties: dict | None):
@@ -687,7 +778,7 @@ class AbstractElement:
 
         :return: Analyses object
         """
-        self._load_if_partial()
+        self._require_loaded()
         return cast(AnalysesList, self._analyses)
 
     @property
@@ -699,7 +790,7 @@ class AbstractElement:
 
         :return: Segment object
         """
-        self._load_if_partial()
+        self._require_loaded()
         return cast(Segment, self._segments)
 
     @property
@@ -709,7 +800,13 @@ class AbstractElement:
  
         :return: Attachments container
         """
-        self._load_if_partial()
+        # Loads first, like `properties`: a file queued on an element that is not fully loaded yet
+        # would otherwise be dropped when the load replaces the container.
+        self._require_loaded()
+        return self._attachment_container()
+
+    def _attachment_container(self) -> Attachments:
+        """The attachments container without loading the element (for use while parsing)."""
         if self._attachments is None:
             attachments_data = cast(dict, self.json_data).get('attachments')
             if attachments_data is None:
@@ -803,6 +900,7 @@ class AbstractElement:
         try:
             attachments_data, json_data = self._load_data_from_server()
             self._load_failed = False
+            self._listed_unloaded = False
             if attachments_data is not None:
                 self._attachments = Attachments(self._session, attachments_data)
             self._set_json_data(json_data)
@@ -817,6 +915,7 @@ class AbstractElement:
         uses the incomplete data. Used by :class:`chemotion_api.elements.ElementSet`.
         """
         self._is_partial = not self.is_new
+        self._listed_unloaded = self._is_partial
 
     def _load_if_partial(self):
         if self._is_partial:
@@ -833,15 +932,15 @@ class AbstractElement:
             raise request_error(res, f'loading {self.element_type} {self.id}')
         res_json = res.json()
         attachments_data = res_json.get('attachments')
-        return attachments_data, self._unwrap_response(res_json)
+        return attachments_data, self._record_from_detail(res_json)
 
-    def _unwrap_response(self, res_json: dict) -> dict:
-        """The element's record in a load or save answer, which the server wraps in the type's
-        response key (or ``element``). Types whose routes answer unwrapped override this."""
-        key = self.get_response_key(self.element_type)
-        if key in res_json:
-            return res_json[key]
-        return res_json.get('element', res_json.get(self.element_type))
+    def _record_from_detail(self, res_json: dict) -> dict:
+        """The element's record inside a detail response — wrapped under its type by most routes."""
+        return res_json[self.get_response_key(self.element_type)]
+
+    def _record_from_create(self, res_json: dict) -> dict | None:
+        """The element's record inside a create response — wrapped under its type by most routes."""
+        return res_json.get(self.element_type, res_json.get('element'))
 
 
     @staticmethod
@@ -864,6 +963,9 @@ class AbstractElement:
             return None
 
     def _set_json_data(self, json_data):
+        if json_data.get('is_restricted') is True:
+            # Shared below full detail: the server put '***' where it withheld a value.
+            mark_withheld(json_data)
         self.json_data = json_data
         # Only overwrite when a value actually parses, so a payload without them leaves what we
         # already knew intact.
@@ -880,7 +982,7 @@ class AbstractElement:
         self.id = json_data.get('id', self._id)
 
         self._properties = self._parse_properties()
-        self._analyses: AnalysesList = self._parse_analyses()
+        self._analyses = self._parse_analyses()
         segment_temp = self._parse_segments()
         self._segments_mapping = segment_temp.get('obj_mapping')
         self._segments = Segment(self._generic_segments,
@@ -888,8 +990,14 @@ class AbstractElement:
                                  self._on_add_segment,
                                  segment_temp.get('values'),
                                  field_lookup=self._segment_field)
-        add_to_dict(self.segments, 'Properties', self.properties)
-        add_to_dict(self.segments, 'Analyses', self.analyses)
+        # Build the wrapper directly rather than reading `self.properties`: that getter calls
+        # `_ensure_loaded()`, and at this point `id` is set and `_data_loaded` is not, so it
+        # issued a full `load()` for every element constructed from a *listing* row — a 50-row
+        # page cost 51 requests, and a transient failure left `_load_failed` on an element that
+        # had merely been listed. Loading stays lazy: the first real property read triggers it.
+        # The same holds for the segments and analyses getters, which load too.
+        add_to_dict(self._segments, 'Properties', PropertyDict(self.on_properties_change, self._properties_data))
+        add_to_dict(self._segments, 'Analyses', self._analyses)
 
     def _on_add_segment(self, key: str, segment_data: dict) -> dict:
         temp_segment = parse_generic_object_json(segment_data)
@@ -928,8 +1036,16 @@ class AbstractElement:
             # precisely because `_data_loaded` is False — nothing lazily-derived has been handed
             # out yet to be clobbered.
             _attachment_data, json_data = self._load_data_from_server()
+            # Parsed as a loaded element, as load() does, so that what the parse builds (a
+            # reaction's materials) is not itself treated as incomplete and refetched.
+            self._data_loaded = True
             self._set_json_data(json_data)
 
+        if self.is_restricted:
+            raise PermissionError(
+                f'{self.element_type} {self.id} is shared with you below the full detail level, so '
+                f'the server withheld some of its fields. Saving it would write placeholders over '
+                f'the real values, so it is refused.')
         self._data_loaded = True
         self.analyses.save_attachments()
         data = self.clean_data()
@@ -949,10 +1065,11 @@ class AbstractElement:
             raise request_error(res, f'saving {self.element_type} {"(new)" if is_created else self.id}')
         if is_created:
             res_json = res.json()
-            res_json = merge_dicts(self.json_data, self._unwrap_response(res_json))
+            res_json = merge_dicts(self.json_data, self._record_from_create(res_json))
             self._set_json_data(res_json)
         if self.attachments is not None:
-            self.attachments.save(self.id, snake_to_camel_case(self.get_response_key(self.element_type)))
+            self.attachments.save(self.id, self._attachable_type or
+                                  snake_to_camel_case(self.get_response_key(self.element_type)))
         self.analyses.clean_up_after_save()
         if load_after_save:
             self.load()
@@ -992,40 +1109,6 @@ class AbstractElement:
         """
         from chemotion_api import measurements
         return measurements.create_measurements(self._session, self, rows)
-
-    def chemical(self):
-        """
-        The chemical inventory record of this sample or SBMM sample, or ``None``
-        (see :mod:`chemotion_api.chemicals`).
-        """
-        from chemotion_api import chemicals
-        return chemicals.load_chemical(self._session, self)
-
-    def save_chemical(self, chemical):
-        """
-        Creates or updates this sample's chemical inventory record right away. A new record needs
-        a CAS number. :return: the stored record.
-        """
-        from chemotion_api import chemicals
-        return chemicals.save_chemical(self._session, self, chemical)
-
-    def attach_safety_sheet(self, file_path: str, vendor_name: str, vendor_product: str,
-                            vendor_info: dict | None = None, cas: str | None = None):
-        """
-        Stores a safety data sheet file with this sample. See
-        :func:`chemotion_api.chemicals.attach_safety_sheet`.
-        """
-        from chemotion_api import chemicals
-        return chemicals.attach_safety_sheet(self._session, self, file_path, vendor_name, vendor_product,
-                                             vendor_info, cas)
-
-    def save_vendor_safety_sheet(self, chemical, vendor_product: str):
-        """
-        Has the server download a vendor's safety data sheet for this sample. See
-        :func:`chemotion_api.chemicals.save_vendor_safety_sheet`.
-        """
-        from chemotion_api import chemicals
-        return chemicals.save_vendor_safety_sheet(self._session, self, chemical, vendor_product)
 
     def save_analyses(self) -> None:
         """
@@ -1076,8 +1159,8 @@ class AbstractElement:
                 if child.get('id') == analysis.id:
                     child['is_deleted'] = True
         self._put_container(container)
-        # Keep the local list rather than re-parsing the server's container: that would drop
-        # unsaved analyses and unsaved edits to the other analyses. They are matched by id on save.
+        # Only this analysis goes. The others stay the objects they were, so their unsaved edits
+        # and new (unsaved) analyses survive; re-parsing the server's answer would drop both.
         del self.analyses[index]
 
     def _put_container(self, container: dict) -> None:
@@ -1316,29 +1399,111 @@ class AbstractElement:
         return self.id
 
     def _web_collection_id(self) -> int | str:
-        if (self.json_data or {}).get('collection_id') is not None:
-            return self.json_data['collection_id']
+        data = self.json_data or {}
+        if data.get('collection_id') is not None:
+            return data['collection_id']
         try:
-            labels = self.json_data['tag']['taggable_data']['collection_labels'] or []
+            labels = data['tag']['taggable_data']['collection_labels'] or []
         except (KeyError, TypeError):
             labels = []
         # Shared and synchronized collections have different URLs in the web client
         owned = next((x for x in labels if not x.get('is_shared') and not x.get('is_synchronized')), None)
         return owned['id'] if owned is not None else 'all'
 
+    #: The pydantic model that validates this element type's properties, or ``None`` for none
+    #: (LabIMotion generic elements validate against their klass's JSON schema instead). Sample
+    #: and Reaction set it too but keep their own handlers, which carry stoichiometry side effects.
+    _properties_model: type[BaseModel] | None = None
+
+    #: The server's model name for attachments of this element type, when it is not the
+    #: camel-cased element type (``Attachment::ELEMENT_ATTACHABLE_TYPES`` in the ELN).
+    _attachable_type: str | None = None
+
+    #: Properties the ELN stores as Quill rich text (a delta). They read as the stored delta;
+    #: :func:`chemotion_api.utils.quill_to_text` flattens it. A write may be a plain string, which
+    #: is stored via :func:`chemotion_api.utils.text_to_quill`, or a well-formed delta (formatting
+    #: included, so content read from the ELN can be written back). Owner, 2026-11-13.
+    _rich_text_fields: tuple[str, ...] = ()
+
+    def _rich_text_write(self, name: list, value: list) -> None:
+        """Convert a plain string (or ``None``, which clears the field) to a delta, and check the
+        field stays a well-formed delta."""
+        from chemotion_api.utils import is_quill_document, text_to_quill
+        top = name[0]
+        if top not in self._rich_text_fields:
+            return
+        if len(name) == 1:
+            if value[-1] is None:
+                # Clearing the field: stored as an empty delta, which every element type saves.
+                value[-1] = text_to_quill('')
+            elif isinstance(value[-1], str):
+                value[-1] = text_to_quill(value[-1])
+            elif not is_quill_document(value[-1]):
+                raise ValueError(f"properties[{top!r}] is rich text: assign a string, None or a Quill "
+                                 f"delta ({{'ops': [{{'insert': ...}}, ...]}}); see text_to_quill().")
+            else:
+                value[-1] = value[-1].to_dict() if hasattr(value[-1], 'to_dict') else dict(value[-1])
+            return
+        # A write *into* the delta: the field must still be a delta afterwards.
+        proposed = proposed_field(self._properties.get(top), name, value[-1])
+        if not is_quill_document(proposed):
+            raise ValueError(f"properties[{top!r}] would no longer be a Quill delta after this write.")
+
+    def _validated_properties(self, props: dict) -> dict:
+        """Run freshly parsed properties through :attr:`_properties_model` and keep the coerced values.
+
+        Keys the model does not declare pass through unchanged (the models allow extras).
+
+        This reads what the server sent, so a value the model rejects does not make the element
+        unloadable: that field keeps the value as sent, with a warning, and the others are still
+        coerced. Writes through :attr:`properties` stay strict.
+        """
+        model = self._properties_model
+        if model is None:
+            return props
+        try:
+            validated = model.model_validate(props)
+        except ValidationError:
+            out = {}
+            for key, value in props.items():
+                try:
+                    out[key] = _plain(validate_field(model, key, value))
+                except ValidationError as e:
+                    logger.warning('%s %s: kept %r for %r as the server sent it; it does not fit %s (%s)',
+                                   self.element_type, self.id, value, key, model.__name__,
+                                   e.errors()[0].get('msg') if e.errors() else e)
+                    out[key] = value
+            return out
+        return {key: (_plain(getattr(validated, key)) if key in model.model_fields else value)
+                for key, value in props.items()}
+
     def on_properties_change(self, dict_obj, name, value):
         """
         Hook invoked when a value in the :attr:`properties` dict is changed.
 
-        Subclasses override this to validate, coerce and propagate side effects of a change. The
-        base implementation accepts every change unchanged.
+        With a :attr:`_properties_model`, the written field alone is validated and coerced (a
+        nested write is applied to a copy of its field first), and the coerced value is stored.
+        Without one, every change is accepted unchanged. Subclasses override this to add side
+        effects.
 
         :param dict_obj: The chain of dicts leading to the changed value
         :param name: The chain of keys identifying the changed value
         :param value: The chain of values, the last being the new value
-        :return: ``True`` to let the default assignment proceed
+        :return: ``True`` to let the default assignment proceed, ``False`` when it was applied here
+        :raises pydantic.ValidationError: if the new value does not fit the field.
         """
-        return True
+        self._rich_text_write(name, value)
+        model = self._properties_model
+        if model is None:
+            if name[0] in self._rich_text_fields:
+                dict_obj[-1][name[-1]] = value[-1]
+                return False
+            return True
+        top = name[0]
+        proposed = proposed_field(self._properties.get(top), name, value[-1])
+        coerced = value_at(validate_field(model, top, proposed), name[1:])
+        dict_obj[-1][name[-1]] = _plain(coerced)
+        return False
 
     def __eq__(self, other):
         return isinstance(other, AbstractElement) and self.json_ld['@id'] == other.json_ld['@id']
@@ -1487,6 +1652,32 @@ def ui_state_selection(elements, action: str) -> dict[str, dict[str, Any]]:
     return selection
 
 
+
+def _own_collection_ids(session: Connection) -> set[int]:
+    """The ids of the collections the current user owns, their "All" included."""
+    res = session.get('/api/v1/collections/')
+    if res.status_code != 200:
+        raise request_error(res, 'listing your collections')
+    ids = {row['id'] for row in (res.json() or {}).get('own') or [] if row.get('id') is not None}
+    res = session.get('/api/v1/collections/all')
+    if res.status_code != 200:
+        raise request_error(res, 'loading your "All" collection')
+    all_collection = (res.json() or {}).get('collection') or {}
+    if all_collection.get('id') is not None:
+        ids.add(all_collection['id'])
+    return ids
+
+
+def _collection_ids_of(detail: dict) -> set[int]:
+    """The ids of the collections a detail response says its element is in."""
+    record = next((v for v in detail.values() if isinstance(v, dict) and 'tag' in v), detail)
+    try:
+        labels = record['tag']['taggable_data']['collection_labels'] or []
+    except (KeyError, TypeError):
+        return set()
+    return {label['id'] for label in labels if isinstance(label, dict) and label.get('id') is not None}
+
+
 def delete_elements(session: Connection, elements, collection_id: int | None = None,
                     delete_subsamples: bool = False) -> list[AbstractElement]:
     """
@@ -1512,9 +1703,12 @@ def delete_elements(session: Connection, elements, collection_id: int | None = N
     :param collection_id: the collection the elements are selected in. Elements not in it are
         ignored. Defaults to your "All" collection.
     :param delete_subsamples: also withdraw all samples of deleted reactions.
-    :return: the given elements the server **kept** (they still load afterwards), empty when all of
-        them are gone. Like :meth:`chemotion_api.collection.AbstractCollection.remove_elements`, a
-        2xx answer is not proof that everything went. Finding out costs one GET per element.
+    :return: the given elements the server **kept** (still in one of your own collections
+        afterwards), empty when all of them are gone. One that is now only visible through
+        someone else's share counts as gone: that is all this delete can do to it. Like
+        :meth:`chemotion_api.collection.AbstractCollection.remove_elements`, a 2xx answer is not
+        proof that everything went. Finding out costs one GET per element, plus two to list your
+        collections when one still loads.
     :raises ValueError: if no elements are given or one is unsaved.
     :raises PermissionError: if the collection is one shared with you (403).
     :raises ConnectionError: if the request fails, or checking an element afterwards does.
@@ -1539,17 +1733,23 @@ def delete_elements(session: Connection, elements, collection_id: int | None = N
     # Which elements went has to be asked afterwards. The response's `selecteds` is meant to echo
     # the selection minus what left the view, but ELN main (a8b47c7) returns built-in elements
     # there even after destroying them (generic ones are filtered correctly), so it is not used.
-    # An element that still loads was kept; one that answers 404 (destroyed, or no longer in any
-    # collection you can see) is gone.
+    # An element that answers 404 (destroyed, or in no collection you can see) is gone. One that
+    # still loads may only be visible through someone else's share, which this delete does not
+    # touch: it was kept only if it is still in one of your own collections.
     kept_elements = []
+    own_ids: set[int] | None = None
     for element in elements:
         check = session.get(f'{AbstractElement.get_url(element.element_type)}/{element.id}.json')
-        if check.status_code == 200:
-            kept_elements.append(element)
-        elif check.status_code not in (401, 403, 404):
+        if check.status_code in (401, 403, 404):
+            continue
+        if check.status_code != 200:
             raise ConnectionError(
                 f'The delete request was accepted, but checking {element.element_type} {element.id} '
                 f'afterwards failed: {check.status_code} -> {check.text}')
+        if own_ids is None:
+            own_ids = _own_collection_ids(session)
+        if _collection_ids_of(check.json()) & own_ids:
+            kept_elements.append(element)
     if kept_elements:
         logger.warning('delete_elements: the server kept %d of %d element(s): %s', len(kept_elements),
                        len(elements), ', '.join(f'{e.element_type} {e.id}' for e in kept_elements))

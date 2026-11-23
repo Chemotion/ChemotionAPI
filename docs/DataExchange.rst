@@ -10,15 +10,13 @@ Collection export and import
 
 .. code-block:: python
 
-    collection.export('project.zip')                       # one collection
-    root.export_collections(col_a, col_b, file_path='two.zip')
-    new_collections = root.import_collections('project.zip')
+    collection.export_zip('project.zip')                   # the ELN's native archive
+    new_collections = instance.import_zip('project.zip')
 
-.. automethod:: chemotion_api.collection.Collection.export
+.. automethod:: chemotion_api.collection.AbstractCollection.export_zip
     :no-index:
-.. automethod:: chemotion_api.collection.RootCollection.import_collections
+.. automethod:: chemotion_api.Instance.import_zip
     :no-index:
-.. autofunction:: chemotion_api.collection.export_collections
 
 Importing samples
 -----------------

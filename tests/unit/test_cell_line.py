@@ -1,106 +1,85 @@
-"""Cell lines (M4.1), offline, against a real ELN `main` cell line payload."""
-import copy
+"""Cell lines offline, on payloads captured from ELN v4.0.1."""
 import json
 import os
+from types import SimpleNamespace
 
 import pytest
 
-from chemotion_api.elements.cell_line import CellLine
-from chemotion_api.elements.registry import element_type_info
-from chemotion_api.schema_manager import SchemaManager
+from chemotion_api.elements import CellLine
+from chemotion_api.elements.abstract_element import AbstractElement
 
-FIXTURE = os.path.join(os.path.dirname(__file__), 'data', 'cell_line_v4_main.json')
-
-
-class _About:
-    status_code, text = 200, '<h4>Version: v4.0.0</h4>'
+SESSION = SimpleNamespace(_host_url='http://localhost',
+                          schema_manager=SimpleNamespace(generate_model_type=lambda *a: 'chemotion:type'))
+SEGMENTS = SimpleNamespace(all_classes=[])
+FIXTURES = os.path.join(os.path.dirname(__file__), '..', 'fixtures', 'cell_line')
 
 
-class _Res:
-    def __init__(self, status, payload):
-        self.status_code, self._payload, self.text = status, payload, str(payload)
-
-    def json(self):
-        return self._payload
-
-
-class _Session:
-    schema_manager = SchemaManager(_About())
-    _host_url = 'http://eln.test'
-
-    def __init__(self, *responses):
-        self.responses, self.calls = list(responses), []
-        self.records = {r._payload['id']: r._payload for r in responses}
-
-    def get(self, url, **kw):
-        # The cell line route answers unwrapped; serve what was last returned for that id.
-        wanted = int(url.removesuffix('.json').rsplit('/', 1)[-1])
-        return _Res(200, self.records.get(wanted, _payload()))
-
-    def post(self, url, data=None, **kw):
-        self.calls.append(('post', url, data))
-        return self.responses.pop(0)
-
-    def put(self, url, data=None, **kw):
-        self.calls.append(('put', url, json.loads(data)))
-        return self.responses.pop(0)
+def _line(name='cellline_show.json'):
+    with open(os.path.join(FIXTURES, name)) as f:
+        data = json.load(f)
+    if 'cell_lines' in data:
+        data = data['cell_lines'][0]
+    line = CellLine(SEGMENTS, SESSION, json_data=data)
+    line._data_loaded = True
+    return line
 
 
-class _Segments:
-    all_classes = []
+def test_routing_and_unwrapped_records():
+    line = _line()
+    assert AbstractElement.get_url('cell_line') == '/api/v1/cell_lines'
+    assert line.save_url() == '/api/v1/cell_lines'
+    assert line._record_from_detail({'id': 1}) == {'id': 1}
 
 
-def _payload():
-    with open(FIXTURE) as f:
-        return json.load(f)
+def test_sample_and_material_fields_are_apart():
+    line = _line()
+    assert set(line.properties.keys()) == {'name', 'description', 'amount', 'unit', 'passage', 'contamination'}
+    assert line.material['organism'] == 'Homo sapiens'
+    assert line.material['source'] == 'ATCC'
 
 
-def _cell_line(session=None, payload=None):
-    return CellLine(_Segments(), session or _Session(), json_data=payload or _payload())
+def test_a_save_sends_the_whole_material_and_the_id_in_the_body():
+    out = _line()._clean_properties_data()
+    assert out['cell_line_sample_id'] == str(_line().id)
+    assert out['material_names'].startswith('API-HeLa-') and out['source'] == 'ATCC'
+    assert out['organism'] == 'Homo sapiens' and 'material_description' in out
 
 
-def test_registered():
-    info = element_type_info('cell_line')
-    assert (info.cls, info.url) == (CellLine, '/api/v1/cell_lines')
+def test_writes_are_validated():
+    from pydantic import ValidationError
+    line = _line()
+    with pytest.raises(ValidationError):
+        line.properties['passage'] = 'third'
+    with pytest.raises(ValidationError):
+        line.material['optimal_growth_temp'] = 'warm'
+    line.material['optimal_growth_temp'] = '37'
+    assert line.material['optimal_growth_temp'] == 37.0
 
 
-def test_properties_merge_sample_and_material():
-    cl = _cell_line()
-    p = cl.properties
-    assert (p['name'], p['amount'], p['unit'], p['passage']) == ('batch 1', 1000, 'cell count', 4)
-    assert (p['material_names'], p['source'], p['organism']) == ('HeLa', 'ATCC', 'Homo sapiens')
-    assert cl.material_id == 1 and cl.attachments is None
+def test_editing_someone_elses_material_is_refused_before_saving(monkeypatch):
+    line = _line()
+    line._material_owner = 99
+    monkeypatch.setattr(line, '_session', SimpleNamespace(current_user_id=lambda: 7))
+    line.material['tissue'] = 'liver'
+    with pytest.raises(PermissionError, match="created by another user"):
+        line.save()
 
 
-def test_update_puts_to_the_collection_url_with_the_id_in_the_body():
-    session = _Session(_Res(200, _payload()))
-    cl = _cell_line(session)
-    cl.properties['passage'] = 5
-    cl.save()
-    (method, url, body), = session.calls
-    assert (method, url) == ('put', '/api/v1/cell_lines')
-    assert body['cell_line_sample_id'] == str(cl.id) and body['passage'] == 5
-    assert body['material_names'] == 'HeLa' and 'container' in body
-    assert 'cellline_material' not in body and 'id' not in body
+def test_the_current_user_is_fetched_once_per_login(monkeypatch):
+    """The owner check ran `User.load_me` on every save that changed a material field."""
+    from chemotion_api.connection import Connection
+    calls = []
+    monkeypatch.setattr('chemotion_api.user.User.load_me',
+                        classmethod(lambda cls, s: calls.append(1) or SimpleNamespace(id=7)))
+    con = Connection('https://eln.example.org')
+    assert [con.current_user_id() for _ in range(3)] == [7, 7, 7] and len(calls) == 1
+    con.set_bearer_token('another-login')
+    con.current_user_id()
+    assert len(calls) == 2, 'a new login may be another user'
 
 
-def test_a_new_cell_line_needs_material_and_amounts():
-    payload = copy.deepcopy(_payload())
-    for key in ('id', 'cellline_material'):
-        payload.pop(key)
-    cl = _cell_line(payload=payload)
-    assert cl.is_new
-    with pytest.raises(ValueError, match='material_names'):
-        cl.clean_data()
-
-
-def test_copy_and_split():
-    session = _Session(_Res(201, dict(_payload(), id=8, short_label='API-C2')),
-                       _Res(201, dict(_payload(), id=9, short_label='API-C1-1')))
-    cl = _cell_line(session)
-    col = type('C', (), {'id': 4, 'label': 'x'})()
-    assert cl.copy(col).short_label == 'API-C2'
-    assert cl.split(col).id == 9
-    assert [(c[1], c[2]['id'], c[2]['collection_id']) for c in session.calls] == [
-        ('/api/v1/cell_lines/copy', cl.id, 4), ('/api/v1/cell_lines/split', cl.id, 4)]
-    assert session.calls[0][2]['container']['container_type'] == 'root'
+def test_required_fields_are_checked_before_saving():
+    line = _line()
+    line.properties['amount'] = None
+    with pytest.raises(ValueError, match="amount"):
+        line.save()

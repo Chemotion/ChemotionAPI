@@ -69,18 +69,6 @@ def test_cas_numbers(payload, expected):
     assert MoleculeManager(_Session(_Res(200, payload))).load_cas('X') == expected
 
 
-def test_names_are_renamed_from_the_select_option_shape():
-    rows = {'molecules': [{'value': 16, 'label': 'ethanol', 'desc': 'iupac_name', 'mid': 7}]}
-    session = _Session(_Res(200, rows))
-    assert MoleculeManager(session).add_name(7, 'spirit') == [
-        {'id': 16, 'name': 'ethanol', 'description': 'iupac_name', 'molecule_id': 7}]
-    assert session.calls[0][2] == {'id': 7, 'new_name': 'spirit'}
-
-
-def test_names_of_an_unknown_molecule_are_empty():
-    assert MoleculeManager(_Session(_Res(200, []))).get_names(999) == []
-
-
 def test_render_svg_failure_is_reported():
     with pytest.raises(ValueError, match='All rendering services failed'):
         MoleculeManager(_Session(_Res(201, {'success': False, 'error': 'All rendering services failed'}))).render_svg('M')

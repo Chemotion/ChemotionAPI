@@ -33,13 +33,6 @@ def test_lookup_by_inchikey(logged_in_instance, ethanol):
     assert mm.get_molecule_by_inchikey('AAAAAAAAAAAAAA-AAAAAAAAAA-N') is None
 
 
-def test_names_and_adding_one(logged_in_instance, ethanol):
-    mm = logged_in_instance.molecule()
-    name = f'API_TEST {uuid.uuid4().hex[:6]}'
-    assert name in [n['name'] for n in mm.add_name(ethanol.id, name)]
-    assert name in [n['name'] for n in mm.get_names(ethanol.id)]
-
-
 def test_render_and_load_svg(logged_in_instance, ethanol):
     mm = logged_in_instance.molecule()
     path = mm.render_svg(ethanol['molfile'])

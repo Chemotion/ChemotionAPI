@@ -1,47 +1,36 @@
-"""Cell lines on a live ELN (M4.1)."""
+"""Cell lines against a live ELN v4.0.1: create, reload, edit sample and material, re-link."""
 import uuid
 
-import pytest
-
-pytestmark = pytest.mark.integration
-
-
-@pytest.fixture()
-def cell_line(instance_with_collection):
-    col = instance_with_collection['main_collection']
-    cl = col.new_cell_line()
-    cl.properties.update(material_names=f'API line {uuid.uuid4().hex[:6]}', source='ATCC', amount=1000,
-                         unit='cell count', passage=3, organism='Homo sapiens', name='batch 1')
-    cl.save()
-    return instance_with_collection['instance'], col, cl
+from chemotion_api.collection import Collection
+from chemotion_api.elements import CellLine
 
 
-def test_create_load_update(cell_line):
-    instance, col, cl = cell_line
-    assert cl.id and cl.material_id and cl.short_label.startswith('API-C')
-    loaded = instance.get_cell_line(cl.id)
-    assert (loaded.properties['name'], loaded.properties['organism']) == ('batch 1', 'Homo sapiens')
-    loaded.properties['passage'] = 4
-    loaded.properties['contamination'] = 'mycoplasma-free'
-    loaded.analyses.add_analyses('growth curve')
-    loaded.save()
-    again = instance.get_cell_line(cl.id)
-    assert (again.properties['passage'], again.properties['contamination']) == (4, 'mycoplasma-free')
-    assert [a['name'] for a in again.analyses] == ['growth curve']
-    assert cl.properties['material_names'] in {m['name'] for m in instance.cell_line_materials()}
-    assert [c.id for c in col.get_cell_lines()] == [cl.id]
+def test_cell_line_round_trip(instance_with_collection: dict):
+    instance = instance_with_collection['instance']
+    col: Collection = instance_with_collection['main_collection']
+    material = f'API-line-{uuid.uuid4().hex[:6]}'
+    line = col.new_cell_line(material, source='ATCC')
+    line.properties['amount'] = 1000
+    line.properties['unit'] = 'cells'
+    line.properties['passage'] = 3
+    line.material['organism'] = 'Homo sapiens'
+    line.save()
 
+    loaded = instance.get_cell_line(line.id)
+    assert isinstance(loaded, CellLine)
+    assert (loaded.properties['amount'], loaded.properties['passage']) == (1000, 3)
+    assert loaded.material['name'] == material and loaded.material['organism'] == 'Homo sapiens'
 
-def test_copy_split_move_delete(cell_line, instance_with_collection):
-    instance, col, cl = cell_line
-    copied, split = cl.copy(col), cl.split(col)
-    assert copied.material_id == split.material_id == cl.material_id
-    assert split.short_label == f'{cl.short_label}-1'
-    root = instance.get_root_collection()
-    root.add_collection(instance_with_collection['name'] + '_other')
-    root.save()
-    other = root.get_collection(instance_with_collection['name'] + '_other')
-    col.assign_elements(other, copied)
-    assert [c.id for c in other.get_cell_lines()] == [copied.id]
-    assert copied.delete()
-    assert {c.id for c in col.get_cell_lines(per_page=50)} == {cl.id, split.id}
+    listed = next(c for c in col.get_cell_lines() if c.id == line.id)
+    listed.properties['passage'] = 4
+    listed.material['tissue'] = 'cervix'          # our own material: the server applies it
+    listed.save()
+    again = instance.get_cell_line(line.id)
+    assert again.properties['passage'] == 4
+    assert again.material['tissue'] == 'cervix'
+    assert again.material['name'] == material     # not re-linked by a sample-only edit
+
+    other = f'API-line-{uuid.uuid4().hex[:6]}'
+    again.material['name'] = other                 # re-link to another material
+    again.save()
+    assert instance.get_cell_line(line.id).material['name'] == other

@@ -1,4 +1,4 @@
-"""User labels on a live ELN (M1.6): saving labels, bulk add/remove, every element type."""
+"""User labels on a live ELN (M1.6): labels on wellplates, research plans and screens."""
 import uuid
 
 import pytest
@@ -19,27 +19,6 @@ def test_create_and_edit_a_label(logged_in_instance, label):
     label.description = 'edited'
     assert logged_in_instance.save_user_label(label).description == 'edited'
     assert label.id in {lab.id for lab in logged_in_instance.get_user_labels()}
-
-
-def test_bulk_add_and_remove_across_element_types(instance_with_collection, label):
-    instance, col = instance_with_collection['instance'], instance_with_collection['main_collection']
-    sample = col.new_sample_smiles('CCO')
-    sample.save()
-    plate, plan, screen = col.new_wellplate(), col.new_research_plan(), col.new_screen()
-    for element in (plate, plan, screen):
-        element.save()
-
-    col.update_user_labels(sample, plate, plan, screen, add=[label])
-    loaders = [(instance.get_sample, sample), (instance.get_wellplate, plate),
-               (instance.get_research_plan, plan), (instance.get_screen, screen)]
-    for load, element in loaders:
-        reloaded = load(element.id)
-        assert reloaded.properties['user_labels'] == [label.id], element.element_type
-        assert [lab.title for lab in reloaded.user_labels_resolved] == [label.title]
-
-    col.update_user_labels(sample, plate, plan, screen, remove=[label])
-    for load, element in loaders:
-        assert load(element.id).properties['user_labels'] == [], element.element_type
 
 
 @pytest.mark.parametrize('make, load', [('new_wellplate', 'get_wellplate'),
