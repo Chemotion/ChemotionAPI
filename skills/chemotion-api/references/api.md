@@ -180,6 +180,7 @@ Property keys (`sample.properties[...]`):
 MaterialList (list of Sample)
   .append(sample)          # starting_materials/reactants: split; products: copy; solvents: as is
   .append_no_split(sample) # adds the sample itself; sets reaction, role, position, amount like append
+                           # any add raises ValueError if the reaction already holds the sample (any role)
 
 Temperature (properties['temperature'], a dict)
   .add_time_point(hour, minute, second, temperature)

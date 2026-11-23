@@ -28,7 +28,13 @@ class MaterialList(TypedList):
     In order to avoid the splitting and the pre saving use the 'append_no_split'
     method. It adds the sample itself, but like the other methods it assigns the reaction, role and position
     and initializes the amount.
+
+    A sample can be in a reaction only once. Adding one that is already in any of the reaction's
+    lists (the same object, or a sample with the same id) raises ``ValueError``: the ELN keeps a
+    single link per sample, so on save it would silently drop one of the two entries.
     """
+
+    _ROLES = ('starting_materials', 'reactants', 'products', 'solvents', 'purification_solvents')
 
     def __init__(self, reaction: Reaction,
                  mat_type: Literal['starting_materials', 'reactants', 'products', 'solvents', 'purification_solvents'],
@@ -36,6 +42,36 @@ class MaterialList(TypedList):
         super().__init__(Sample, *args)
         self._reaction = reaction
         self._mat_type = mat_type
+        # The entry an item assignment replaces: it is leaving the list, so it is no duplicate.
+        self._replacing: Sample | None = None
+
+    def __setitem__(self, index, element):
+        self._replacing = self[index] if isinstance(index, int) else None
+        try:
+            super().__setitem__(index, element)
+        finally:
+            self._replacing = None
+
+    def _check_not_in_reaction(self, element: Sample) -> None:
+        """Refuse a sample this reaction already holds, in any role.
+
+        :raises ValueError: if the same sample object, or a sample with the same id, is already one
+            of the reaction's materials
+        """
+        if self._reaction is None:
+            lists = [(self._mat_type, self)]
+        else:
+            lists = [(role, self._reaction.properties.get(role) or []) for role in self._ROLES]
+        for role, materials in lists:
+            for existing in materials:
+                if existing is self._replacing:
+                    continue
+                if existing is element or (element.id is not None and existing.id == element.id):
+                    label = element.id if element.id is not None else '(unsaved)'
+                    raise ValueError(
+                        f"Sample {label} is already in this reaction's {role}. The ELN keeps one link "
+                        f"per sample and would drop the other entry on save; remove it from {role} "
+                        f"first, or add a split of it.")
 
     def _prepare_element(self, element: Sample):
         if self._mat_type == 'starting_materials':
@@ -57,6 +93,8 @@ class MaterialList(TypedList):
         return return_element
 
     def _attach(self, element: Sample):
+        """:raises ValueError: if the reaction already holds this sample (see :class:`MaterialList`)"""
+        self._check_not_in_reaction(element)
         element.reaction = self._reaction
         element.role_in_reaction = self._mat_type
         element.properties['position'] = len(self)
@@ -75,6 +113,7 @@ class MaterialList(TypedList):
 
         :param element: Sample to be added
         :return: the added sample
+        :raises ValueError: if this reaction already holds the sample, in any role
         """
 
         self._check_element(element)

@@ -8,6 +8,10 @@ adds a split of it, adding it to the products adds a copy.
 reaction, role and position of the sample are set and its amount is initialized. Saving the reaction recomputes the
 equivalents (and the yields of the products) from the amounts and the reference material.
 
+A sample can be in a reaction only once. Adding a sample the reaction already holds, in any of the five lists
+(the same object or the same id), raises ``ValueError``. To move a sample to another role, remove it from its
+list first.
+
 .. autoclass:: chemotion_api.elements.reaction.Reaction
     :members:
 

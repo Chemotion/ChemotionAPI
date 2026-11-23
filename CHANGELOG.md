@@ -4,15 +4,21 @@ The version scheme tracks the server: `312.x.y` ↔ ELN 3.1.x (named after 3.1.2
 started; tested against ELN 3.1.4 from 312.1.2 on), `211.x.y` ↔ ELN 2.1.1.
 For an ELN v4 server, use the `4xx` line instead.
 
-## 312.1.2 — tested against ELN 3.1.4
+## 312.1.2 — tested against ELN 3.1.4; a sample is in a reaction only once
 
 ### Changed
 
+- **Adding a sample the reaction already holds raises `ValueError`**, in any role and through
+  every way of adding one (`append`, `insert`, `append_no_split`, item assignment); the message
+  names the role it is already in. The ELN keeps one link per sample, so the second entry was
+  dropped on save without an error. Checked live on ELN 3.1.4: the same sample as starting
+  material and reactant came back as a reactant only, and a solvent appended twice came back
+  once. To move a sample to another role, remove it from the first list.
 - **The test target moves from ELN 3.1.2 to ELN 3.1.4**, the current 3.1.x release (3.1.3 was
   never imaged). The client is contract-compatible with it: the integration suite, on a freshly
   seeded `complat/chemotion:eln-3.1.4` (digest-pinned; `/about` reports `v3.1.4`), **80 passed,
   1 skipped, 0 failed**. The one skip is the reaction-level yield test, skipped on this line as
-  before. No code changes.
+  before. Apart from the guard above, no code changes.
 - **Mixtures keep their components through a save.** ELN 3.1.4 reconciles a mixture's components
   whenever a reaction is saved: an explicit `components: []` deletes them, a missing key leaves
   them. The client sends back the components it loaded, so `sample.save()` and a reaction save

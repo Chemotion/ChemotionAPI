@@ -120,7 +120,8 @@ r.reactants.append(instance.get_sample(13))            # split, short label 'rea
 r.products.append(instance.get_sample(14))             # appends a COPY
 r.solvents.append(col.new_solvent('Toluene'))          # solvents are added as they are
 # r.starting_materials.append_no_split(sample) adds the sample itself (no split, no pre-saving);
-# like append it sets reaction, role and position and keeps/initializes the amount
+# like append it sets reaction, role and position and keeps/initializes the amount.
+# A sample the reaction already holds (any role, same id) raises ValueError; remove it first to move it.
 
 r.reference_sample = r.starting_materials[0]   # equivalents and yields are relative to it
 r.reactants[0].set_amount(1.5, QuantityUnit.Equivalent)
@@ -289,6 +290,7 @@ dest.remove_elements(sample)                # stays in 'All'; nothing is deleted
 - Purity is a fraction (0-1), yields in variations are percent, equivalents are plain factors.
 - Appending to starting materials/reactants/products saves the source sample and creates a new sample.
   Use `append_no_split` if you must not create splits.
+- A sample can be in a reaction only once: adding one it already holds, in any role, raises `ValueError`.
 - Segment and property names are the human-readable labels, case-sensitive.
 - `ElementSet` (listings) cannot be indexed negatively; with an IRI filter it can only be iterated.
 - `ValueError` from `save()` usually means a segment value does not fit its field; the message names the field.
