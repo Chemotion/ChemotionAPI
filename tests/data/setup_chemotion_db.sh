@@ -18,6 +18,21 @@ PG_USER="${PG_USER:-postgres}"
 PG_DB="${PG_DB:-chemotion}"
 ELN_PORT="${ELN_PORT:-3579}"
 
+# Every connection setting above is env-overridable, and this script runs
+# `DROP DATABASE ... WITH (FORCE)`. Pointed at anything other than the test_config stack, that is
+# an unrecoverable mistake with no prompt in between, so anything off the default target has to be
+# opted into explicitly.
+if [ "$PG_HOST" != "localhost" ] && [ "$PG_HOST" != "127.0.0.1" ] \
+   || [ "$PG_PORT" != "54320" ] || [ "$PG_DB" != "chemotion" ]; then
+    if [ "$CONFIRM_DESTRUCTIVE_DB_RESET" != "yes" ]; then
+        echo "ERROR: refusing to DROP DATABASE '$PG_DB' on $PG_HOST:$PG_PORT."
+        echo "       This script is for the test_config stack (localhost:54320/chemotion) only."
+        echo "       To override deliberately, set CONFIRM_DESTRUCTIVE_DB_RESET=yes."
+        exit 1
+    fi
+    echo "WARNING: destructive reset of '$PG_DB' on $PG_HOST:$PG_PORT (explicitly confirmed)"
+fi
+
 BASEDIR="$(cd "$(dirname "$0")"; pwd)"
 SEED="${BASEDIR}/test.sql"
 
@@ -38,6 +53,20 @@ compose() {
 
 # Ensure the stack is up (no-op if already running).
 compose up -d || { echo "ERROR: docker compose up failed"; exit 1; }
+
+wait_for_eln() {
+    for i in $(seq 1 120); do
+        code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ELN_PORT}/about" 2>/dev/null)
+        [ "$code" = "200" ] && return 0
+        sleep 5
+    done
+    return 1
+}
+
+# Wait until the ELN serves before touching its database. On boot the container runs its own
+# migrations (`make all-eln`) before starting the server; running ours while that is in progress
+# lost the race with ActiveRecord::ConcurrentMigrationError (seen twice on a freshly started stack).
+wait_for_eln || { echo "ERROR: ELN did not come up on port ${ELN_PORT}"; exit 1; }
 
 # Route psql/pg_dump through host tools when present, else through the db container.
 if command -v psql >/dev/null 2>&1; then
@@ -80,18 +109,26 @@ echo "DB reset from seed: ${SEED}"
 
 # Bring the schema up to the running server version (normally a no-op: the committed seed is
 # already dumped at the current stack version; this covers stack upgrades).
-compose exec -T "${DOCKER_COMPOSE_SERVICE}" bash -c "cd /chemotion/app && bundle exec rake db:migrate" \
-    || { echo "ERROR: rake db:migrate failed"; exit 1; }
+# Retried on ConcurrentMigrationError only: another migrator holding the advisory lock is
+# transient, any other failure is not.
+for attempt in 1 2 3; do
+    out=$(compose exec -T "${DOCKER_COMPOSE_SERVICE}" bash -c "cd /chemotion/app && bundle exec rake db:migrate" 2>&1)
+    status=$?
+    [ $status -eq 0 ] && break
+    if [ $attempt -lt 3 ] && grep -q "ConcurrentMigrationError" <<< "$out"; then
+        echo "Migration lock held by another process; retrying ($attempt/3)"
+        sleep 15
+        continue
+    fi
+    echo "$out"
+    echo "ERROR: rake db:migrate failed"
+    exit 1
+done
 echo "Migrations completed"
 
 # Restart the ELN so it reconnects to the fresh database, then wait for it.
 compose restart "${DOCKER_COMPOSE_SERVICE}" || exit 1
-for i in $(seq 1 120); do
-    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${ELN_PORT}/about" 2>/dev/null)
-    [ "$code" = "200" ] && break
-    [ "$i" = "120" ] && { echo "ERROR: ELN did not come up on port ${ELN_PORT}"; exit 1; }
-    sleep 5
-done
+wait_for_eln || { echo "ERROR: ELN did not come up on port ${ELN_PORT}"; exit 1; }
 echo "Chemotion is running on port ${ELN_PORT}"
 echo "**SUCCESS**"
 exit 0
