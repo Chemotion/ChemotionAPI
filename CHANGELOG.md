@@ -1,7 +1,32 @@
 # Changelog
 
-The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.1, `312.x.y` ↔ ELN 3.1.2,
-`211.x.y` ↔ ELN 2.1.1.
+The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.x (from 4.0.1; 401.1.2 is tested
+against 4.0.2), `312.x.y` ↔ ELN 3.1.2, `211.x.y` ↔ ELN 2.1.1.
+
+## 401.1.2 — tested against ELN 4.0.2; Triethylamine
+
+Tested against `complat/chemotion:eln-4.0.2` (digest-pinned; `/about` reports `v4.0.2`): the
+integration suite, on a freshly seeded instance, **217 passed, 1 skipped, 0 failed**, the same
+as on 4.0.1. The skip is `weighing_tasks`, which the test ELN does not enable. ELN 4.0.2 changed
+no route, parameter or entity field, so 401.1.1 works against it unchanged apart from the
+solvent below.
+
+### Added
+
+- **Triethylamine** in the solvent list (SMILES `CCN(CC)CC`, density 0.726), as ELN 4.0.2 added
+  it (ComPlat/chemotion_ELN#3710). `collection.new_solvent('Triethylamine')` now works.
+
+### Note for servers upgraded to 4.0.2
+
+- **A sample belongs to at most one reaction** (ComPlat/chemotion_ELN#3646). The upgrade
+  migration repairs links that an earlier save had moved and then splits every sample that is
+  still used by several reactions: the earliest reaction keeps the sample, every other reaction
+  gets a new split of it, with a new id. A script that keeps sample ids from before the upgrade
+  should look them up again through their reaction.
+- Adding a sample that another reaction already uses (`append_no_split`, or a solvent, which
+  `solvents.append` adds as it is) does not move the link: the reaction you save gets a split
+  of the sample, with a new id, and the other reaction keeps the original. The ELN has done this
+  since 4.0.1; checked live on 4.0.2, where no error is raised.
 
 ## 401.1.1 — the AI-assistant skill ships in the package
 
