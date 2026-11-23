@@ -98,4 +98,4 @@ To override an image for one run, set the variable in your shell: the shell envi
 CHEMOTION_ELN_IMAGE=some/other:image just stack-up
 ```
 
-The v4 line's branch (`release/401.x`) sets its own values in its `images.env`.
+The v4 line's branch (`release/40x.x`) sets its own values in its `images.env`.
