@@ -1076,8 +1076,9 @@ class AbstractElement:
                 if child.get('id') == analysis.id:
                     child['is_deleted'] = True
         self._put_container(container)
+        # Keep the local list rather than re-parsing the server's container: that would drop
+        # unsaved analyses and unsaved edits to the other analyses. They are matched by id on save.
         del self.analyses[index]
-        self._analyses = self._parse_analyses()
 
     def _put_container(self, container: dict) -> None:
         res = self._session.put('/api/v1/containers/container',

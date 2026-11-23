@@ -9,6 +9,7 @@ from typing import Self
 
 from chemotion_api.elements.reaction import Reaction
 from chemotion_api.elements.sample import Sample
+from chemotion_api.connection import request_error
 from chemotion_api.elements.abstract_element import AbstractElement
 from chemotion_api.elements.registry import register_element_type
 

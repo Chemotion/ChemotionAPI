@@ -244,7 +244,8 @@ def wait_until_downloadable(archive: Archive, timeout: float = 300, poll_interva
             if data.get('id') == archive.id:
                 ready = Archive.from_json(data, session)
                 archive.__dict__.update(ready.__dict__)
-                return archive
+                if archive.downloadable:
+                    return archive
         if time.monotonic() >= deadline:
             raise TimeoutError(f'Report "{archive.file_name}" was not generated within {timeout} s; '
                                'it may still be queued on the server.')

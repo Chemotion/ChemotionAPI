@@ -51,14 +51,23 @@ def test_no_compute_server_and_no_permission():
         ComputeTask.from_json(TASK, _Session(_Res(500, {}))).check()
     sample = type('S', (), {'id': 3})()
     with pytest.raises(PermissionError, match='does not run computations'):
-        submit_compute_task(_Session(_Res(200, {'error': 'Unauthorized'}, text='{"error":"Unauthorized"}')), sample)
+        submit_compute_task(_Session(_Res(200, {'compute_tasks': []}),
+                                     _Res(200, {'error': 'Unauthorized'}, text='{"error":"Unauthorized"}')), sample)
 
 
 def test_submit_returns_the_samples_newest_task():
     sample = type('S', (), {'id': 3})()
-    session = _Session(_Res(201, None, text=''), _Res(200, {'compute_tasks': [dict(TASK, id=25, status='pending'), TASK]}))
+    session = _Session(_Res(200, {'compute_tasks': [TASK]}), _Res(201, None, text=''),
+                       _Res(200, {'compute_tasks': [dict(TASK, id=25, status='pending'), TASK]}))
     assert submit_compute_task(session, sample).id == 25
-    assert session.calls[0] == ('post', '/api/v1/molecules/compute', {'sampleId': 3})
+    assert session.calls[1] == ('post', '/api/v1/molecules/compute', {'sampleId': 3})
+
+
+def test_submit_does_not_return_an_earlier_task_of_the_sample():
+    sample = type('S', (), {'id': 3})()
+    session = _Session(_Res(200, {'compute_tasks': [TASK]}), _Res(201, None, text=''),
+                       _Res(200, {'compute_tasks': [TASK]}))
+    assert submit_compute_task(session, sample) is None
 
 
 def test_predictions_and_simulation():

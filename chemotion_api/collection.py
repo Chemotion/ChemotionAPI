@@ -670,7 +670,13 @@ class AbstractCollection:
 
         patterns = {pid: re.compile(rf'^{re.escape(label)}-\d+$') for pid, label in labels.items()}
         found: dict[int, int] = {}
-        for row in self._newest_sample_rows(session, stop_at_id=newest_before):
+        # Not stopping at the first old row: the list is ordered by update time, so an older
+        # sample edited meanwhile (or a touched parent) can come before the new subsamples.
+        # Created ones have ids above anything listed before the split.
+        pages = 2 + len(selection) // 50
+        for row in self._newest_sample_rows(session, pages=pages):
+            if row['id'] <= newest_before:
+                continue
             for parent_id, pattern in patterns.items():
                 if parent_id not in found and pattern.match(row.get('short_label') or ''):
                     found[parent_id] = row['id']
@@ -1205,11 +1211,12 @@ class AbstractCollection:
         if not elements or any(getattr(e, 'element_type', None) != kind for e in elements):
             raise ValueError(f'Give the {kind.replace("_", " ")}s to split.')
         selection = ui_state_selection(elements, 'split')[kind]['checkedIds']
+        collection_id = self._own_id(list_key.replace('_', ' '))
         session = self.get_root()._session
         before = self._newest_id(session, list_key)
         res = session.post(url, data={'ui_state': {
             kind: {'all': False, 'included_ids': selection, 'excluded_ids': []},
-            'currentCollectionId': self._own_id(list_key.replace('_', ' '))}})
+            'currentCollectionId': collection_id}})
         if res.status_code == 401:
             raise PermissionError(f'You may not add elements to collection "{self.label}".')
         if res.status_code not in (200, 201):
@@ -1695,7 +1702,7 @@ class Collection(AbstractEditableCollection):
 
         Only your own collections have metadata you can read.
         """
-        res = self._root_session().get(f'/api/v1/collections/{self.id}/metadata')
+        res = self._root_session().get(f'/api/v1/collections/{self._own_id("metadata")}/metadata')
         if res.status_code == 404:
             return None
         if res.status_code != 200:
@@ -1715,7 +1722,7 @@ class Collection(AbstractEditableCollection):
         if not isinstance(metadata, dict):
             raise ValueError('metadata is a dict of DataCite fields.')
         res = self._root_session().post('/api/v1/collections/metadata',
-                                        data={'collection_id': self.id, 'metadata': metadata})
+                                        data={'collection_id': self._own_id('metadata'), 'metadata': metadata})
         if res.status_code == 404:
             raise ValueError(f'Only your own collections have metadata; "{self.label}" is not one of them.')
         if res.status_code not in (200, 201):
@@ -1734,7 +1741,7 @@ class Collection(AbstractEditableCollection):
         :return: the collection, as the server now lists it among yours.
         :raises PermissionError: if you hold no ownership offer for this collection, or it is locked.
         """
-        res = self._root_session().post(f'/api/v1/collection_shares/take_ownership/{self.id}')
+        res = self._root_session().post(f'/api/v1/collection_shares/take_ownership/{self._own_id("an owner")}')
         if res.status_code in (401, 403, 422):
             raise PermissionError(f'Cannot take ownership of "{self.label}": {res.text}')
         if res.status_code not in (200, 201):
@@ -1750,7 +1757,7 @@ class Collection(AbstractEditableCollection):
         :param origin: the sending ELN's address (``https://eln.example.org``); requests from
             elsewhere are refused.
         """
-        res = self._root_session().get('/api/v1/gate/jwt/new', params={'collection_id': self.id, 'origin': origin})
+        res = self._root_session().get('/api/v1/gate/jwt/new', params={'collection_id': self._own_id('transfers'), 'origin': origin})
         if res.status_code == 401:
             raise PermissionError(f'Only your own collections can receive transfers, not "{self.label}".')
         if res.status_code != 200:
@@ -1761,7 +1768,7 @@ class Collection(AbstractEditableCollection):
         """Sending side: store the token another ELN issued (:meth:`gate_token` there) for sending
         this collection to it (``POST /api/v1/gate/register_gate``)."""
         res = self._root_session().post('/api/v1/gate/register_gate',
-                                        data={'collection_id': self.id, 'destination': destination, 'token': token})
+                                        data={'collection_id': self._own_id('transfers'), 'destination': destination, 'token': token})
         if res.status_code == 401:
             raise PermissionError(f'Only your own collections can be transferred, not "{self.label}".')
         if res.status_code not in (200, 201, 204):
@@ -1810,7 +1817,7 @@ class Collection(AbstractEditableCollection):
         session = self._root_session()
         # The server forwards this Referer to the target as Origin, where it must match the token.
         headers = {**session.get_json_session_header(), 'Referer': f'{session.host_url}/'}
-        res = getattr(session, method)(f'/api/v1/gate/transmitting/{self.id}', params={'target': target},
+        res = getattr(session, method)(f'/api/v1/gate/transmitting/{self._own_id("transfers")}', params={'target': target},
                                        headers=headers)
         if res.status_code in (200, 201, 202):
             return res
