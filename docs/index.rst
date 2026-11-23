@@ -24,10 +24,10 @@ workflows that leverage the ELN's capabilities and streamline their research pro
    :meth:`~chemotion_api.Instance.test_connection` — before any credentials are sent.
 
    **For an ELN 3.1.x server, use the** ``312.x`` **release line instead.** The package version
-   tracks the server it targets: ``401.x.y`` ↔ ELN 4.0.1, ``312.x.y`` ↔ ELN 3.1.2,
+   tracks the server it targets: ``401.x.y`` ↔ ELN 4.0.x (from 4.0.1), ``312.x.y`` ↔ ELN 3.1.2,
    ``211.x.y`` ↔ ELN 2.1.1.
 
-   This release is tested against ELN **v4.0.1**. ``.eln`` / RO-Crate export is not included.
+   This release is tested against ELN **v4.0.2**. ``.eln`` / RO-Crate export is not included.
 
 .. note::
    **Element types.** Samples, reactions, wellplates, research plans, screens, cell lines, SBMM

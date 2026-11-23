@@ -99,6 +99,10 @@
     "smiles": "C1CCCO1",
     "density": 0.889
   },
+  "Triethylamine": {
+    "smiles": "CCN(CC)CC",
+    "density": 0.726
+  },
   "Toluene": {
     "smiles": "CC1=CC=CC=C1",
     "density": 0.87
