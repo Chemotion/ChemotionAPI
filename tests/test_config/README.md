@@ -5,7 +5,7 @@ A local Chemotion ELN (docker compose) plus a seeded database, so the integratio
 
 ## Contents
 
-- `compose.yml` — a minimal Chemotion 3.1.2 stack, based on the
+- `compose.yml` — a minimal Chemotion stack, based on the
   [ChemOrc payload compose](https://github.com/Chemotion/ChemOrc/blob/main/payload/docker-compose.yml)
   but trimmed to the essentials: `db` (Postgres, published on host port **54320**) and `eln`
   (published on host port **3579**, running with `CONFIG_ROLE=combine` so the one container serves
@@ -13,6 +13,10 @@ A local Chemotion ELN (docker compose) plus a seeded database, so the integratio
   only knows the eln/worker roles, so `embed/` mounts the
   [Push2Deploy](https://github.com/Chemotion/Push2Deploy) versions of `run.sh`/`health.sh`, which
   add the combine role.
+
+  The compose project (`chemotion-test-<suffix>`) and the volume names carry a per-line suffix
+  (`CHEMOTION_STACK_SUFFIX`) so one line's volumes — which survive `docker compose down` — are
+  never silently reused under another line's images.
 - `../data/test.sql` — the seeded database. All users are fictional:
 
   | Login | Password | Role |
@@ -67,14 +71,31 @@ environment and **has no default** — an unset variable makes `docker compose` 
 which is the point. A stack that silently brings up the wrong server produces failures that look
 like client bugs.
 
-```bash
-# ELN 3.1.2 (the v3 line)
-export CHEMOTION_DB_IMAGE=ptrxyz/chemotion:db-3.1.2
-export CHEMOTION_ELN_IMAGE=ptrxyz/chemotion:eln-3.1.2
+This branch supplies them from **`images.env`**, next to `compose.yml`:
 
-# ELN v4 (the v4 line; pin by digest: `next-release` is a rolling tag and is force-pushed)
-export CHEMOTION_DB_IMAGE=complat/dev:postgres16-rdkit@sha256:...
-export CHEMOTION_ELN_IMAGE=complat/chemotion_eln_stage:next-release@sha256:...
+| variable | this branch (312.x) |
+|---|---|
+| `CHEMOTION_ELN_IMAGE` | `complat/chemotion:eln-3.1.4@sha256:f9eb18e2…` |
+| `CHEMOTION_DB_IMAGE` | `ptrxyz/chemotion:db-3.1.2@sha256:97477d89…` |
+| `CHEMOTION_STACK_SUFFIX` | `v3` |
+
+**Mind the publisher.** `ptrxyz/chemotion` stops at 3.1.2 (May 2026); ELN 3.1.4 is
+`complat/chemotion`. ComPlat published no `db-3.1.4`, so the DB image stays `ptrxyz` `db-3.1.2`,
+the pairing ChemOrc's own 3.1.4 compose uses. Pinned 2026-11-23 at **v3.1.4** (`/about` reports
+`Version: v3.1.4`). Bumping a digest is a deliberate, reviewed change: record the new digest
+together with the `Version:` string `/about` then reports.
+
+**After an ELN bump, remove the app volume** (`just stack-down`, then
+`docker volume rm chemotion_app_v3`). The `eln` service mounts a named volume over
+`/chemotion/app`, i.e. over the application code, and Docker fills a named volume from the image
+only while it is empty: a new image over an old app volume runs the old ELN. `/about` tells you
+which one is running.
+
+To override an image for one run, set the variable in your shell: the shell environment wins over
+`--env-file`.
+
+```bash
+CHEMOTION_ELN_IMAGE=some/other:image just stack-up
 ```
 
-The release line's own branch sets these; see its `justfile` or CI workflow.
+The v4 line's branch (`release/40x.x`) sets its own values in its `images.env`.

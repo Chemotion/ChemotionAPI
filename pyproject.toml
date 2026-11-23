@@ -1,6 +1,6 @@
 [project]
 name = "chemotion-api"
-version = "312.1.1"
+version = "312.1.2"
 description = "A Chemotion python API"
 authors = [{ name = "Martin Starman", email = "martin.starman@kit.edu" }]
 license = { text = "AGPL-3.0-or-later" }

@@ -1,7 +1,36 @@
 # Changelog
 
-The version scheme tracks the server: `312.x.y` ↔ ELN 3.1.2, `211.x.y` ↔ ELN 2.1.1.
+The version scheme tracks the server: `312.x.y` ↔ ELN 3.1.x (named after 3.1.2, where the line
+started; tested against ELN 3.1.4 from 312.1.2 on), `211.x.y` ↔ ELN 2.1.1.
 For an ELN v4 server, use the `4xx` line instead.
+
+## 312.1.2 — tested against ELN 3.1.4; a sample is in a reaction only once
+
+### Changed
+
+- **Adding a sample the reaction already holds raises `ValueError`**, in any role and through
+  every way of adding one (`append`, `insert`, `append_no_split`, item assignment); the message
+  names the role it is already in. The ELN keeps one link per sample, so the second entry was
+  dropped on save without an error. Checked live on ELN 3.1.4: the same sample as starting
+  material and reactant came back as a reactant only, and a solvent appended twice came back
+  once. To move a sample to another role, remove it from the first list.
+- **The test target moves from ELN 3.1.2 to ELN 3.1.4**, the current 3.1.x release (3.1.3 was
+  never imaged). The client is contract-compatible with it: the integration suite, on a freshly
+  seeded `complat/chemotion:eln-3.1.4` (digest-pinned; `/about` reports `v3.1.4`), **80 passed,
+  1 skipped, 0 failed**. The one skip is the reaction-level yield test, skipped on this line as
+  before. Apart from the guard above, no code changes.
+- **Mixtures keep their components through a save.** ELN 3.1.4 reconciles a mixture's components
+  whenever a reaction is saved: an explicit `components: []` deletes them, a missing key leaves
+  them. The client sends back the components it loaded, so `sample.save()` and a reaction save
+  both keep them. A new integration test (`tests/test_mixture.py`) builds a mixture, saves it on
+  its own and inside a reaction, and checks the components on the server each time.
+- **The test stack** now pins its images by digest (`tests/test_config/images.env`). ELN 3.1.4 is
+  published as `complat/chemotion`; there is no `db-3.1.4`, so the DB image stays
+  `ptrxyz/chemotion:db-3.1.2`, the pairing ChemOrc's 3.1.4 compose uses. The compose project and
+  its volumes now carry a line suffix (`chemotion-test-v3`, `chemotion_*_v3`), as on the v4 line:
+  the app volume holds the ELN code itself, so reusing the old unsuffixed `chemotion_app` volume
+  would have run 3.1.2 under the 3.1.4 image. The DB reset waits for the ELN to finish its own boot
+  migrations before running `db:migrate`.
 
 ## 312.1.1 — the AI-assistant skill ships in the package
 
