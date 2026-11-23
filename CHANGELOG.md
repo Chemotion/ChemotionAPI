@@ -3,7 +3,7 @@
 The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.x (from 4.0.1; 401.1.2 is tested
 against 4.0.2), `312.x.y` ↔ ELN 3.1.2, `211.x.y` ↔ ELN 2.1.1.
 
-## 401.1.2 — tested against ELN 4.0.2; Triethylamine
+## 401.1.2 — tested against ELN 4.0.2; Triethylamine; a sample is in a reaction only once
 
 Tested against `complat/chemotion:eln-4.0.2` (digest-pinned; `/about` reports `v4.0.2`): the
 integration suite, on a freshly seeded instance, **217 passed, 1 skipped, 0 failed**, the same
@@ -15,6 +15,16 @@ solvent below.
 
 - **Triethylamine** in the solvent list (SMILES `CCN(CC)CC`, density 0.726), as ELN 4.0.2 added
   it (ComPlat/chemotion_ELN#3710). `collection.new_solvent('Triethylamine')` now works.
+
+### Changed
+
+- **Adding a sample the reaction already holds raises `ValueError`**, in any role and through
+  every way of adding one (`append`, `insert`, `append_no_split`, item assignment); the message
+  names the role it is already in. The ELN keeps one link per sample, so the second entry was
+  dropped on save without an error: the same sample as starting material and reactant came
+  back as a reactant only, and a solvent appended twice came back once. To move a sample to
+  another role, remove it from the first list. A sample of another reaction is still accepted
+  (see below).
 
 ### Note for servers upgraded to 4.0.2
 

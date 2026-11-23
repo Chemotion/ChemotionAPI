@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 import chemotion_api.elements.empty_elements as empty_elements
-from chemotion_api.elements.reaction import Reaction
+from chemotion_api.elements.reaction import MaterialList, Reaction
 from chemotion_api.elements.sample import Molecule, Sample
 from chemotion_api.elements.utils import QuantityUnit
 
@@ -545,3 +545,64 @@ def test_equivalent_without_a_reference_mol_is_a_clear_error():
     with pytest.raises(ValueError, match='reference sample has no amount'):
         reactant.set_amount(0.5, QuantityUnit.Equivalent)
     assert reactant.properties['equivalent'] == before   # the refused value is not kept
+
+
+# --- A sample can be in a reaction only once ---------------------------------------------------
+# The ELN keeps one reactions_samples link per sample, so a second entry was dropped on save
+# without an error (same sample in two roles: only one role survived; a solvent twice: collapsed).
+
+@pytest.mark.parametrize('role', ['starting_materials', 'reactants', 'products', 'solvents',
+                                  'purification_solvents'])
+def test_same_sample_twice_in_one_reaction_is_refused(role):
+    sample = _sample(1)
+    reaction = _reaction([sample])
+    with pytest.raises(ValueError, match="already in this reaction's starting_materials"):
+        reaction.properties[role].append_no_split(sample)
+    assert sum(m is sample for r in MaterialList._ROLES for m in reaction.properties[r]) == 1
+
+
+def test_another_object_with_the_same_id_is_refused():
+    reaction = _reaction([_sample(1)])
+    with pytest.raises(ValueError, match='Sample 1 is already'):
+        reaction.reactants.append_no_split(_sample(1))
+
+
+def test_solvent_appended_twice_is_refused():
+    solvent = _sample(5)
+    reaction = _reaction([])
+    reaction.solvents.append(solvent)
+    with pytest.raises(ValueError, match="already in this reaction's solvents"):
+        reaction.solvents.append(solvent)
+    assert len(reaction.solvents) == 1
+
+
+def test_refused_sample_is_left_untouched():
+    sample = _sample(1)
+    reaction = _reaction([sample])
+    with pytest.raises(ValueError):
+        reaction.reactants.append_no_split(sample)
+    assert sample.role_in_reaction == 'starting_materials'
+    assert len(reaction.reactants) == 0
+
+
+def test_distinct_and_unsaved_samples_are_accepted():
+    reaction = _reaction([_sample(1)], [_sample(2)])
+    reaction.products.append_no_split(_sample(None))
+    reaction.products.append_no_split(_sample(None))
+    assert len(reaction.products) == 2
+
+
+def test_replacing_a_solvent_with_itself_is_allowed():
+    solvent = _sample(5)
+    reaction = _reaction([])
+    reaction.solvents.append(solvent)
+    reaction.solvents[0] = solvent
+    assert list(reaction.solvents) == [solvent]
+
+
+def test_moving_a_sample_to_another_role_works():
+    sample = _sample(1)
+    reaction = _reaction([sample])
+    reaction.starting_materials.remove(sample)
+    reaction.reactants.append_no_split(sample)
+    assert sample.role_in_reaction == 'reactants'
