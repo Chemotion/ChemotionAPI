@@ -30,7 +30,8 @@ The FAIR `.eln` (RO-Crate) export and the offline ingester are **not** in this r
   no meaningful overlap. Connecting to an older instance raises `UnsupportedServerVersion` at
   `test_connection()`, before any credentials are sent.
   **For an ELN 3.1.x server, use the `312.x` release line instead.**
-  The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.1, `312.x.y` ↔ ELN 3.1.2.
+  The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.x (from 4.0.1; 401.1.2 is tested
+  against 4.0.2), `312.x.y` ↔ ELN 3.1.2.
 - For development: [uv](https://docs.astral.sh/uv/) and [just](https://just.systems/)
   (plus docker for the integration test stack).
 
@@ -135,6 +136,9 @@ just docs    # → docs/_build/html/index.html
 
 For AI coding assistants, [skills/chemotion-api/](./skills/chemotion-api/SKILL.md) is a skill with
 the common workflows and a signature reference (`references/api.md`).
+It also ships in the installed package, matching its version, at
+`chemotion_api/skills/chemotion-api/` (find it with
+`python -c "import chemotion_api, pathlib; print(pathlib.Path(chemotion_api.__file__).parent / 'skills')"`).
 
 ## Testing
 

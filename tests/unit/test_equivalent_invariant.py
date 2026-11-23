@@ -45,7 +45,7 @@ def test_incremental_equivalents_match_a_full_recompute(seed):
         elif op == 3:
             reaction.reference_sample = rng.choice(mats)
         else:
-            new = _sample(100 + rng.randrange(1000), mw=rng.uniform(20, 200))
+            new = _sample(100 + len(mats), mw=rng.uniform(20, 200))
             reaction.properties['reactants'].append_no_split(new)
             mats.append(new)
         seen = _equivalents(reaction)
