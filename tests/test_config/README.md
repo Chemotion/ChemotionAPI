@@ -50,8 +50,8 @@ This branch supplies them from **`images.env`**, next to `compose.yml`:
 
 | variable | this branch (401.x) | the 312.x line |
 |---|---|---|
-| `CHEMOTION_ELN_IMAGE` | `complat/chemotion:eln-4.0.1@sha256:5777517a…` | `ptrxyz/chemotion:eln-3.1.2` |
-| `CHEMOTION_DB_IMAGE` | `complat/chemotion:db-4.0.1@sha256:780e0d57…` | `ptrxyz/chemotion:db-3.1.2` |
+| `CHEMOTION_ELN_IMAGE` | `complat/chemotion:eln-4.0.2@sha256:9dc3ac7f…` | `ptrxyz/chemotion:eln-3.1.2` |
+| `CHEMOTION_DB_IMAGE` | `complat/chemotion:db-4.0.1@sha256:780e0d57…` (no `db-4.0.2` exists) | `ptrxyz/chemotion:db-3.1.2` |
 | `CHEMOTION_STACK_SUFFIX` | `v4` | `v3` |
 
 **Mind the publisher.** v2 and v3 images are `ptrxyz/chemotion`, which stops at 3.1.2 (May 2026)
@@ -63,7 +63,22 @@ The images are still **pinned by digest**, now by choice rather than necessity: 
 no immutable v4 tag existed, so a digest was the only way to know what a run had measured. It
 remains the right default — bumping one is a deliberate, reviewed change, and the new digest
 should be recorded together with the `Version:` string `/about` then reports.
-Pinned 2026-11-11 at **v4.0.1** (`/about` reports `v4.0.1-0-g84f58f4`).
+Pinned 2026-11-23 at **v4.0.2** (`/about` reports `Version: v4.0.2`). ComPlat published only an
+`eln-4.0.2` image; the database image stays `db-4.0.1`, as in ChemOrc's 4.0.2 compose.
+Earlier: 2026-11-11 at v4.0.1 (`v4.0.1-0-g84f58f4`).
+
+**After changing the ELN image, remove the app volume** before the next start:
+
+```bash
+just stack-down
+docker volume rm chemotion_app_v4      # chemotion_app_v3 on the 312.x line
+```
+
+`compose.yml` keeps the application code in a named volume (`/chemotion/app`, as ChemOrc does),
+and Docker fills a named volume from the image only while the volume is empty. Without this step
+the new image keeps running the old code: the first eln-4.0.2 run here reported v4.0.1 on `/about`
+and lacked the 4.0.2 migrations. Check `/about` after every bump. The data and database volumes
+can stay; the DB reset reseeds the database anyway.
 
 Every caller passes the file explicitly (`--env-file`), because `conftest.py` runs
 `tests/data/setup_chemotion_db.sh` directly and that script calls `docker compose` itself — so
