@@ -47,7 +47,7 @@ def test_new_sample_decupled_success(instance_with_collection):
 
 def test_solvents(logged_in_instance, delete_col_prefix):
     solver_list = logged_in_instance.get_solvent_list()
-    assert len(solver_list) == 190
+    assert len(solver_list) == 191
     assert '1-Butyl-3-methylimidazolium Bis(trifluoromethanesulfonyl)imide' in solver_list
 
     col = logged_in_instance.get_root_collection().get_or_create_collection(f'/{delete_col_prefix}test_col')
