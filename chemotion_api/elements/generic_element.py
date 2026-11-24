@@ -97,7 +97,7 @@ class GenericElement(AbstractElement, WorkflowInterface):
         """
         The workflow of the element's layers
         """
-        self._load_if_partial()
+        self._require_loaded()
         return self._workflow
 
     def _parse_properties(self) -> dict:
@@ -121,8 +121,10 @@ class GenericElement(AbstractElement, WorkflowInterface):
         :return: the template field
 
         :raises KeyError: if the layer or field does not exist
+        :raises ConnectionError: if the element came from a listing and its full record could not
+            be loaded
         """
-        self._load_if_partial()
+        self._require_loaded()
         layer_mapping = self._properties_mapping.get(layer)
         if layer_mapping is None:
             raise KeyError(f'Unknown layer "{layer}". Available: '
