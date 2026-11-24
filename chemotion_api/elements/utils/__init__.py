@@ -124,7 +124,7 @@ def calculate_quantity(current_value: float, current_unit: QuantityUnit, output_
     :param density: Density (used for liter conversions); 0 if unknown
     :param molarity: Molarity (used for liter conversions); 0 if unknown
     :param gas_type: Gas role; non-OFF triggers the gas-phase calculation path
-    :param vessel_size: Vessel size used for gas conversions
+    :param vessel_size: Vessel volume in litres, used for gas conversions
     :param temperature_in_k: Temperature in Kelvin used for gas conversions
     :param ppm: Parts-per-million used for gas conversions
     :param time_in_h: Time in hours used for gas conversions
@@ -162,7 +162,7 @@ class GasCalculations:
         :param density: Density of the material; 0 if unknown
         :param molarity: Molarity of the material; 0 if unknown
         :param gas_type: The gas role driving the calculation
-        :param vessel_size: Vessel size used for gas conversions
+        :param vessel_size: Vessel volume in litres, used for gas conversions
         :param temperature_in_k: Temperature in Kelvin used for gas conversions
         :param ppm: Parts-per-million concentration used for gas conversions
         :param time_in_h: Time in hours used for gas conversions
@@ -186,12 +186,16 @@ class GasCalculations:
     PARTS_PER_MILLION_FACTOR = 1_000_000
     DEFAULT_TEMPERATURE_IN_KELVIN = 294
 
+    # Feedstock: ideal gas law at 1 atm and DEFAULT_TEMPERATURE_IN_KELVIN, n = V * purity / (R * T),
+    # as the ELN's calculateFeedstockMoles / calculateFeedstockVolume (UnitsConversion.js). The ELN
+    # takes a missing purity as 1 (`this.purity || 1.0`).
+
     @classmethod
     def _feedstock_from_liter(cls, current_value, output_unit, purity):
         if output_unit == QuantityUnit.Liter:
             return current_value
         if output_unit == QuantityUnit.Mole:
-            return (current_value * purity) / (cls.IDEAL_GAS_CONSTANT * cls.DEFAULT_TEMPERATURE_IN_KELVIN)
+            return (current_value * (purity or 1.0)) / (cls.IDEAL_GAS_CONSTANT * cls.DEFAULT_TEMPERATURE_IN_KELVIN)
         return float('NaN')
 
     @classmethod
@@ -199,17 +203,22 @@ class GasCalculations:
         if output_unit == QuantityUnit.Mole:
             return current_value
         if output_unit == QuantityUnit.Liter:
-            return  (cls.IDEAL_GAS_CONSTANT * cls.DEFAULT_TEMPERATURE_IN_KELVIN) / (current_value * purity)
+            return (current_value * cls.IDEAL_GAS_CONSTANT * cls.DEFAULT_TEMPERATURE_IN_KELVIN) / (purity or 1.0)
         return float('NaN')
 
     @classmethod
     def _gas_converter(cls, output_unit, molecular_weight, vessel_size,  temperature_in_k: float = 0, ppm: float = 0, time_in_h: float = 0):
-        if output_unit == QuantityUnit.Liter:
-            return vessel_size / molecular_weight
+        # A gas product's amount follows from the vessel volume (litres), its concentration (ppm)
+        # and temperature: n = ppm * V / (R * T * 10^6) and V_gas = n * R * T, as the ELN's
+        # calculateGasMoles / calculateGasVolume. Without all three it cannot be computed (the ELN
+        # leaves the amount empty, `updateGasMoles`).
+        if not (vessel_size and temperature_in_k and ppm) or vessel_size < 0 or temperature_in_k < 0 or ppm < 0:
+            return float('NaN')
+        moles = (ppm * vessel_size) / (cls.IDEAL_GAS_CONSTANT * temperature_in_k * cls.PARTS_PER_MILLION_FACTOR)
         if output_unit == QuantityUnit.Mole:
-            if ppm is None or temperature_in_k is None:
-                return 0
-            return (ppm * vessel_size) / (cls.IDEAL_GAS_CONSTANT * temperature_in_k * cls.PARTS_PER_MILLION_FACTOR)
+            return moles
+        if output_unit == QuantityUnit.Liter:
+            return moles * cls.IDEAL_GAS_CONSTANT * temperature_in_k
         return float('NaN')
 
 
@@ -228,3 +237,14 @@ def vessel_volume_ml(vessel_size) -> float | None:
     if amount is None:
         return None
     return float(amount) * 1000 if vessel_size.get('unit') == 'l' else float(amount)
+
+
+def vessel_volume_l(vessel_size) -> float | None:
+    """A reaction's vessel size as a volume in litres, the unit the ELN's gas calculations use.
+
+    The ELN converts the stored size to litres (`Reaction.findReactionVesselSizeCatalystMaterialValues`)
+    before the gas-phase maths and before writing a variation's ``aux.vesselVolume``. Accepts what
+    :func:`vessel_volume_ml` accepts; ``None`` without an amount.
+    """
+    ml = vessel_volume_ml(vessel_size)
+    return None if ml is None else ml / 1000

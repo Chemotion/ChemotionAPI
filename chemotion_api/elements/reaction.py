@@ -49,7 +49,7 @@ from datetime import datetime
 
 from chemotion_api.elements.sample import Sample, SampleVariationType, GasPhaseObj
 from chemotion_api.elements.utils.converter import convert_value, TIME_UNITS, TEMPERATURE_UNITS, TON_UNITS
-from chemotion_api.elements.utils import QuantityUnit, GasType, vessel_volume_ml
+from chemotion_api.elements.utils import QuantityUnit, GasType, vessel_volume_l
 from chemotion_api.elements.schemas.reaction import schema, PURIFICATION_OPTIONS, STATUS_OPTIONS
 from chemotion_api.utils import TypedList, quill_hedging, merge_dicts, PropertyDict, UnitDict
 from chemotion_api.utils.withheld import WITHHELD
@@ -242,7 +242,7 @@ class SampleVariation:
         """
         Updates the auxiliary values (purity, molecular weight, ...) from the sample.
 
-        :param vessel_volume: vessel volume of the reaction
+        :param vessel_volume: vessel volume of the reaction in litres
         """
         self._set_aux(vessel_volume)
 
@@ -685,7 +685,8 @@ class Variation:
 
     @staticmethod
     def _get_vessel_volume(vessel_size):
-        return vessel_volume_ml(vessel_size)
+        # In litres, as the ELN writes `aux.vesselVolume` (ReactionVariations.js).
+        return vessel_volume_l(vessel_size)
 
     def update_and_clean(self, vessel_size):
         vessel_volume = self._get_vessel_volume(vessel_size)
