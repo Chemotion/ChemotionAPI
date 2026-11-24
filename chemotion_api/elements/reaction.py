@@ -1452,6 +1452,9 @@ class Reaction(AbstractElement):
         materials = [*self.starting_materials, *self.reactants, *self.products, *self.solvents,
                      *self.purification_solvents]
         result = super().save(load_after_save)
+        # Rebuilt from the saved data on next access. Only now: dropped while serialising, the
+        # variations edited in memory were lost when the request failed.
+        self._variations = None
         # The materials' link fields went out with the reaction.
         for material in materials:
             material._clear_pending_link_fields()
@@ -1708,6 +1711,4 @@ class Reaction(AbstractElement):
                 if klass.get('element_klass', {}).get('name') == 'reaction' and klass.get('is_active', True)}
 
     def _clean_variations(self) -> dict:
-        cleand_data = self.variations.clean()
-        self._variations = None
-        return cleand_data
+        return self.variations.clean()
