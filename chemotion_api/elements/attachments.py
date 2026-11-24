@@ -10,12 +10,11 @@ from collections.abc import Sequence, Iterator
 from typing import cast
 
 from chemotion_api.utils import safe_join
-import magic
 import requests
 
 from chemotion_api.connection import Connection, request_error
 from chemotion_api.elements.analyses_manager import AnalysesManager
-from chemotion_api.utils import AttrAccessMixin
+from chemotion_api.utils import AttrAccessMixin, guess_mime_type
 
 
 class Attachment(AttrAccessMixin, dict):
@@ -344,12 +343,11 @@ class Attachments(Sequence):
         """
         filename = os.path.basename(file_path)
         file_uuid = uuid.uuid4().__str__()
-        file_magic = magic.Magic(mime=True)
         upload_file_obj = {
             'file_uuid': file_uuid,
             'file_path': file_path,
             'filename': filename,
-            'mime_type': file_magic.from_file(file_path)
+            'mime_type': guess_mime_type(file_path)
 
         }
         filesize = os.path.getsize(file_path)   # no need to read the file to know its size

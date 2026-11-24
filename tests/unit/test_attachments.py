@@ -33,8 +33,7 @@ def _queued_attachments():
         f.write(b"hello")
         tmp_path = f.name
     try:
-        with patch("chemotion_api.elements.attachments.magic.Magic",
-                   lambda mime=True: MagicMock(from_file=lambda p: "text/plain")):
+        with patch("chemotion_api.elements.attachments.guess_mime_type", lambda p: "text/plain"):
             atts.add_file(tmp_path)
         yield atts, con
     finally:
