@@ -33,7 +33,7 @@ from chemotion_api.elements import ElementSet, Wellplate, Sample, Reaction, Gene
     SbmmSample, CellLine, DeviceDescription, \
     AbstractElement
 from chemotion_api.elements.sample import MoleculeManager
-from chemotion_api.connection import Connection, request_error
+from chemotion_api.connection import Connection, request_error, _origin
 from chemotion_api.elements import literature, research_plan
 from chemotion_api import account, chemicals, compute, reports, scifinder, vessels
 from chemotion_api import sample_tasks as _sample_tasks
@@ -911,10 +911,13 @@ class Instance:
         :param id: JSON-LD ID string starting with the host url of the element
         :return: the requested element
 
-        :raises ValueError: if the information cannot be fetched. Make sure that your connection is active and the ID is correct.
+        :raises ValueError: if the id belongs to another server (scheme, host and port must match
+            this instance's) or the information cannot be fetched. Make sure that your connection is active and the ID is correct.
         """
         o = urlparse(id)
-        if not self._con.host_url.startswith(f'{o.scheme}://{o.hostname}'):
+        # Compare the whole origin: a prefix check accepted `https://eln.example.org` for an
+        # instance at `https://eln.example.org.evil.com` and ignored the port.
+        if _origin(o) != _origin(urlparse(self._con.host_url)):
             raise ValueError('Host does not fit!')
         path_array = o.path.split('/')
         elem = self.all_element_classes.get(path_array[-2][:-1])

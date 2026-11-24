@@ -72,3 +72,32 @@ def test_a_failed_load_raises_instead_of_returning_listing_data(access):
     for _attempt in range(2):
         with pytest.raises(ConnectionError, match='could not be loaded'):
             access(element)
+
+
+# --- Instance.get_json_ld_id: the id must be from this instance --------------------------------
+
+def _instance_at(monkeypatch, host_url):
+    import chemotion_api as pkg
+
+    inst = pkg.Instance.__new__(pkg.Instance)
+    inst._con = SimpleNamespace(host_url=host_url)
+    monkeypatch.setattr(pkg.Instance, 'all_element_classes',
+                        property(lambda self: {'sample': {'name': 'sample', 'is_generic': False}}))
+    monkeypatch.setattr(pkg, 'ElementSet', type('ES', (), {
+        '__init__': lambda s, *a: None, 'load_element': lambda s, id: ('loaded', id)}))
+    return inst
+
+
+@pytest.mark.parametrize('host_url', ['https://eln.example.org.evil.com', 'https://eln.example.org:8443',
+                                      'http://eln.example.org'])
+def test_json_ld_id_of_another_origin_is_refused(monkeypatch, host_url):
+    """The check compared a prefix only, without the port."""
+    inst = _instance_at(monkeypatch, host_url)
+    with pytest.raises(ValueError, match='Host does not fit'):
+        inst.get_json_ld_id('https://eln.example.org/api/v1/samples/1.json')
+
+
+@pytest.mark.parametrize('host_url', ['https://eln.example.org', 'https://ELN.example.org:443/'])
+def test_json_ld_id_of_this_origin_is_loaded(monkeypatch, host_url):
+    inst = _instance_at(monkeypatch, host_url)
+    assert inst.get_json_ld_id('https://eln.example.org/api/v1/samples/1.json') == ('loaded', 1)
