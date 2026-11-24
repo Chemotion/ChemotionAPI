@@ -3,7 +3,8 @@ from chemotion_api.connection import request_error
 from chemotion_api.elements.abstract_element import AbstractElement
 from chemotion_api.elements.workflow_interface import WorkflowInterface
 from chemotion_api.elements.workflow_manager import Workflow
-from chemotion_api.utils import parse_generic_object_json, clean_generic_object_json, parse_generic_object_layer_json
+from chemotion_api.utils import parse_generic_object_json, clean_generic_object_json, parse_generic_object_layer_json, \
+    select_options_of
 from typing import cast
 from chemotion_api.utils.segment_fields import SegmentField
 
@@ -17,6 +18,9 @@ class GenericElement(AbstractElement, WorkflowInterface):
     The properties of a generic element are its layers and fields:
     ``properties[layer][field] = value``. Layers can be added to the element
     using its workflow (:meth:`wf_next`) or directly (:meth:`wf_add_layer`).
+    Each value has the shape of its field type, as the ELN web form stores it
+    (see :func:`chemotion_api.utils.clean_generic_field`); a table is a list of
+    :class:`chemotion_api.utils.TableRow`.
 
     Usage::
 
@@ -135,7 +139,7 @@ class GenericElement(AbstractElement, WorkflowInterface):
         if field_mapping is None or field_obj is None:
             raise KeyError(f'Unknown field "{field}" in layer "{layer}". Available: '
                            f'{", ".join(x for x in layer_mapping if not x.startswith("__"))}')
-        return SegmentField(field_obj, layer_key, properties.get('select_options'))
+        return SegmentField(field_obj, layer_key, select_options_of(self.json_data))
 
     def wf_tree(self) -> dict[str,list]:
         """
