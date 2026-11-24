@@ -109,7 +109,7 @@ class MoleculeModel(_PropertiesBase):
     exact_molecular_weight: float | None = None
     sum_formular: str | None = None
     molfile: str | None = None
-    cas: str | list[str] | None = None
+    cas: str | list[str | None] | None = None      # the ELN sends [null] for some molecules (#23)
     names: list[str] | None = Field(default_factory=list)
 
     def clean(self) -> dict:
