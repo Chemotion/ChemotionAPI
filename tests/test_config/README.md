@@ -124,6 +124,7 @@ the ELN's own Push2Deploy files (`Dockerfile.p2d`, present from v3.1.0-rc on):
 just stack-p2d-build                 # the tested ELN from eln-ref.env (see below)
 just stack-p2d                       # reset the p2d stack from the seed, run every test
 just stack-p2d -m integration -q     # or pass your own pytest arguments
+just stack-p2d unit/test_compute.py  # a path under tests/ is a pytest argument, not a ref
 just stack-p2d-build main            # or any branch, tag (v4.0.0) or full commit sha
 just stack-p2d main
 just stack-p2d-down
@@ -154,11 +155,16 @@ skipped with a warning. Bump the file after a green run against a new commit, an
 
 All of it goes through [`p2d.sh`](p2d.sh), which can also be run directly with `bash`.
 
-- The image is tagged `chemotion-eln-p2d:<ref>` and `chemotion-eln-p2d:<ref>-<sha>`.
+- The image is tagged `chemotion-eln-p2d:<ref>` and `chemotion-eln-p2d:<ref>-<sha>`. A pinned
+  build (from `eln-ref.env`) gets only the `<ref>-<sha>` tag, so `:<ref>` keeps meaning the
+  branch tip you last built with `stack-p2d-build <ref>`.
+- The app volume `chemotion_app_p2d` holds the ELN code, and docker fills a named volume from
+  the image only when it creates it. `stack-p2d` records which image filled it and removes it
+  before testing a different build, so the suite never runs one build's code under another.
 - It runs as compose project `chemotion-test-p2d` with its own volumes (`*_p2d`), so the pinned
   stack and its data are untouched. It keeps the pinned db image from `images.env`.
 - Both stacks publish ports 3579 and 54320, so only one can run at a time. `stack-p2d` refuses
-  to start while another container holds 3579.
+  to start while another container or process holds either port.
 - The first build takes about 45 minutes, because it reinstalls Ruby, Node and every gem. Later
   builds reuse most of it from the BuildKit cache.
 - Near the end the build downloads Ketcher from GitHub. A network timeout there is not a code

@@ -86,9 +86,11 @@ stack-p2d-build ref="":
     bash tests/test_config/p2d.sh build {{ref}}
 
 # reset the p2d stack from the seed and run the test suite against that build (default: all tests;
-# no ref: the tested ELN in tests/test_config/eln-ref.env)
-stack-p2d ref="" *pytest_args:
-    bash tests/test_config/p2d.sh test {{ref}} {{pytest_args}}
+# no ref: the tested ELN in tests/test_config/eln-ref.env). Optional first argument: an ELN ref;
+# anything else, including a path under tests/, goes to pytest as given (quoting kept).
+[positional-arguments]
+stack-p2d *args:
+    bash tests/test_config/p2d.sh test "$@"
 
 # stop the p2d stack (volumes are kept)
 stack-p2d-down:

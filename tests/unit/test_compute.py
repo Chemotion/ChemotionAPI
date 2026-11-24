@@ -70,6 +70,18 @@ def test_submit_does_not_return_an_earlier_task_of_the_sample():
     assert submit_compute_task(session, sample) is None
 
 
+
+def test_a_failed_task_listing_does_not_hide_the_submission():
+    sample = type('S', (), {'id': 3})()
+    # The listing before the submit fails; the submission's own permission error still shows.
+    with pytest.raises(PermissionError, match='does not run computations'):
+        submit_compute_task(_Session(_Res(500, {}), _Res(200, {'error': 'Unauthorized'},
+                                                        text='{"error":"Unauthorized"}')), sample)
+    # It is still submitted, but its task cannot be told from earlier ones, so none is returned.
+    session = _Session(_Res(500, {}), _Res(201, None, text=''))
+    assert submit_compute_task(session, sample) is None
+    assert [c[0] for c in session.calls] == ['get', 'post']
+
 def test_predictions_and_simulation():
     session = _Session(_Res(201, [{'products': ['CC=O']}]), _Res(201, {'error': 'Prediction Sever not found.'}),
                        _Res(500, None, text='<html>'), _Res(200, {'response_1h': 'x', 'response_13c': 'y'}))

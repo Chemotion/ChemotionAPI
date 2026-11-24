@@ -125,18 +125,28 @@ def submit_compute_task(session: Connection, sample) -> ComputeTask | None:
     """Send the sample's molecule to the compute server (``POST /api/v1/molecules/compute``).
 
     The server answers without the task; the sample's newest task that was not there before is
-    returned (``None`` if it is not listed yet).
+    returned. ``None`` if it is not listed yet, or if your task list could not be read before the
+    submission (then the new task cannot be told from earlier ones; see :func:`compute_tasks`).
+    Two submissions of the same sample at the same time may each return the other's task.
 
     :raises PermissionError: if the server has no compute configuration or does not allow you.
     """
     if getattr(sample, 'id', None) is None:
         raise ValueError('Save the sample first.')
     # The answer does not carry the task, so remember the sample's earlier tasks to tell it apart.
-    earlier = {t.id for t in compute_tasks(session) if t.sample_id == sample.id}
+    # A failed listing must not hide the submission's own, clearer error, so it only costs the
+    # identification of the new task.
+    earlier: set[int] | None
+    try:
+        earlier = {t.id for t in compute_tasks(session) if t.sample_id == sample.id}
+    except (ConnectionError, PermissionError):
+        earlier = None
     res = session.post('/api/v1/molecules/compute', data={'sampleId': sample.id})
     text = res.text or ''
     if 'No computation configuration' in text or 'Unauthorized' in text:
         raise PermissionError(f'The ELN does not run computations for you: {text}')
     if res.status_code not in (200, 201, 204):
         raise request_error(res, f'submitting sample {sample.id} for computation')
+    if earlier is None:
+        return None
     return next((t for t in compute_tasks(session) if t.sample_id == sample.id and t.id not in earlier), None)

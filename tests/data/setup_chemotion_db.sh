@@ -63,11 +63,6 @@ wait_for_eln() {
     return 1
 }
 
-# Wait until the ELN serves before touching its database. On boot the container runs its own
-# migrations (`make all-eln`) before starting the server; running ours while that is in progress
-# lost the race with ActiveRecord::ConcurrentMigrationError (seen twice on a freshly started stack).
-wait_for_eln || { echo "ERROR: ELN did not come up on port ${ELN_PORT}"; exit 1; }
-
 # Route psql/pg_dump through host tools when present, else through the db container.
 if command -v psql >/dev/null 2>&1; then
     echo "Using host Postgres client tools (${PG_HOST}:${PG_PORT})"
@@ -86,6 +81,26 @@ for i in $(seq 1 60); do
     sleep 2
 done
 echo "Postgres is ready"
+
+# A db image built on a newer glibc than the one that created the volume refuses CREATE DATABASE
+# ("template database \"template1\" has a collation version mismatch"), so the reset below would
+# drop the test database and fail to recreate it. The test database is rebuilt from the seed
+# anyway (its indexes under the new collation); the templates only need their version updated.
+for tmpl in template1 postgres; do
+    run_psql -XtAqc "ALTER DATABASE $tmpl REFRESH COLLATION VERSION" >/dev/null 2>&1 \
+        || echo "WARNING: could not refresh the collation version of ${tmpl}"
+done
+
+# Wait until the ELN serves before touching its database. On boot the container runs its own
+# migrations (`make all-eln`) before starting the server; running ours while that is in progress
+# lost the race with ActiveRecord::ConcurrentMigrationError (seen twice on a freshly started stack).
+# Without a test database the ELN cannot serve at all (every page is a 500), and there is no boot
+# migration to race, so the wait is skipped: the reset below creates it and restarts the ELN.
+if [ "$(run_psql -XtAc "SELECT 1 FROM pg_database WHERE datname='$PG_DB'")" = "1" ]; then
+    wait_for_eln || { echo "ERROR: ELN did not come up on port ${ELN_PORT}"; exit 1; }
+else
+    echo "No database ${PG_DB} yet; creating it before waiting for the ELN"
+fi
 
 # Backup the current DB (if it exists) before dropping it.
 mkdir -p "${BASEDIR}/dumps"

@@ -1206,7 +1206,8 @@ class AbstractCollection:
 
     def _own_id(self, what: str) -> int:
         if self.id is None:
-            raise ValueError(f'Collection "{self.label}" cannot hold {what}')
+            raise ValueError(f'Collection "{self.label}" cannot hold {what}: it has no id. '
+                             f'Save a new collection first.')
         return self.id
 
     def get_generics_by_name(self, name: str, per_page: int | None = 10, updated_to_date: datetime | None = None,
@@ -1701,7 +1702,7 @@ class Collection(AbstractEditableCollection):
         :return: the collection, as the server now lists it among yours.
         :raises PermissionError: if you hold no ownership offer for this collection, or it is locked.
         """
-        res = self._root_session().post(f'/api/v1/collection_shares/take_ownership/{self._own_id("an owner")}')
+        res = self._root_session().post(f'/api/v1/collection_shares/take_ownership/{self._own_id("an ownership offer")}')
         if res.status_code in (401, 403, 422):
             raise PermissionError(f'Cannot take ownership of "{self.label}": {res.text}')
         if res.status_code not in (200, 201):

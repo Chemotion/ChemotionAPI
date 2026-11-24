@@ -8,7 +8,8 @@
 #
 #   p2d.sh build [<ref>]   shallow-clone <ref>, build chemotion-eln-p2d:<ref>-<sha>, tag :<ref>
 #   p2d.sh test  [<ref>] [pytest args...]
-#                          reset the p2d stack from the seed and run the suite (default: all tests)
+#                          reset the p2d stack from the seed and run the suite (default: all tests);
+#                          a first argument that names a path under tests/ is a pytest argument
 #   p2d.sh down            stop the p2d stack (volumes are kept)
 #   p2d.sh image [<ref>]   print the image tag that `test` would use
 #
@@ -23,7 +24,12 @@
 # - The build downloads Ketcher from GitHub near the end; a network timeout there is not a code
 #   problem, rerun and the cached layers make it quick.
 # - The p2d stack publishes the same host ports as the default one (3579, 54320). Stop whatever
-#   holds them first; `test` refuses to start if another container has 3579.
+#   holds them first; `test` refuses to start if another container or process has either.
+# - The app volume (chemotion_app_p2d) holds the ELN code, and docker fills a named volume from
+#   the image only when it creates it. `test` therefore records which image filled it and removes
+#   it when a different build is tested, so the suite never runs one build's code under another.
+# - A pinned build (from eln-ref.env) is tagged only <name>-<short sha>; the plain :<ref> tag
+#   is left to `build <ref>`, so `test main` never picks up the pinned commit by accident.
 #
 # Environment: P2D_REMOTE (default ComPlat/chemotion_ELN on GitHub), P2D_DIR (clone scratch
 # space, default ~/.cache/chemotion-p2d), P2D_PIN_FILE (default eln-ref.env next to this script).
@@ -59,7 +65,11 @@ pin_set() {
     local key="$1" value="$2" tmp
     tmp="$(mktemp)"
     if grep -q "^[[:space:]]*${key}=" "$PIN_FILE"; then
-        sed "s|^[[:space:]]*${key}=.*|${key}=${value}|" "$PIN_FILE" > "$tmp"
+        # awk, not sed: a value is taken literally (git allows & and | in branch names).
+        P2D_KEY="$key" P2D_VALUE="$value" awk '
+            BEGIN { k = ENVIRON["P2D_KEY"]; v = ENVIRON["P2D_VALUE"] }
+            !done && $0 ~ ("^[[:space:]]*" k "=") { print k "=" v; done = 1; next } { print }
+        ' "$PIN_FILE" > "$tmp"
     else
         cat "$PIN_FILE" > "$tmp"; echo "${key}=${value}" >> "$tmp"
     fi
@@ -132,10 +142,10 @@ pin_name() { printf '%s' "${PIN_BRANCH:-${PIN_TAG:-commit}}"; }
 pin_image() { echo "${IMAGE_REPO}:$(tag_of "$(pin_name)")-${PIN_COMMIT:0:7}"; }
 
 cmd_build() {
-    local ref="${1:-}" commit=""
+    local ref="${1:-}" commit="" pinned=""
     if [ -z "$ref" ] && [ -f "$PIN_FILE" ]; then
         resolve_pin
-        ref="$(pin_name)" commit="$PIN_COMMIT"
+        ref="$(pin_name)" commit="$PIN_COMMIT" pinned=1
         echo "p2d: using $(basename "$PIN_FILE"): ${ref} @ ${commit:0:7}"
     fi
     ref="${ref:-main}"
@@ -165,18 +175,48 @@ cmd_build() {
     [ -z "$commit" ] || [ "$sha" = "$commit" ] || die "fetched ${sha}, expected ${commit}"
     sha="${sha:0:7}"
     tag="$(tag_of "$ref")"
+    # The plain :<ref> tag means "the current tip of <ref>"; a pinned commit must not take it.
+    local tags=(-t "${IMAGE_REPO}:${tag}-${sha}")
+    [ -n "$pinned" ] || tags+=(-t "${IMAGE_REPO}:${tag}")
     echo "p2d: building ${IMAGE_REPO}:${tag}-${sha} (first build ~45 min)"
     DOCKER_BUILDKIT=1 docker build --progress=plain \
         --build-arg "REMOTE=${REMOTE}" \
         -f "${work}/eln/Dockerfile.p2d" \
-        -t "${IMAGE_REPO}:${tag}-${sha}" -t "${IMAGE_REPO}:${tag}" \
+        "${tags[@]}" \
         "${work}/eln"
-    echo "p2d: built ${IMAGE_REPO}:${tag}-${sha}, also tagged ${IMAGE_REPO}:${tag}"
+    if [ -n "$pinned" ]; then
+        echo "p2d: built ${IMAGE_REPO}:${tag}-${sha} (pinned; ${IMAGE_REPO}:${tag} left as it was)"
+    else
+        echo "p2d: built ${IMAGE_REPO}:${tag}-${sha}, also tagged ${IMAGE_REPO}:${tag}"
+    fi
+}
+
+# A first `test` argument that names something under tests/ (a file, a directory, or a node id
+# like test_x.py::test_y) is meant for pytest, not an ELN ref.
+is_test_path() { local p="${1%%::*}"; [ -n "$p" ] && [ -e "${REPO_ROOT}/tests/${p}" ]; }
+
+APP_VOLUME="chemotion_app_${SUFFIX}"
+APP_STATE="${P2D_DIR}/${APP_VOLUME}.image"
+
+# Docker fills a named volume from the image only when it creates the volume, so an app volume
+# made by another build keeps serving that build's code. Remove it when the image changes (and
+# when its origin is unknown); the setup script's `compose up` then refills it from this image.
+fresh_app_volume() {
+    local image="$1" image_id recorded=""
+    image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+    [ ! -f "$APP_STATE" ] || recorded="$(cat "$APP_STATE")"
+    if docker volume inspect "$APP_VOLUME" >/dev/null 2>&1 && [ "$recorded" != "$image_id" ]; then
+        echo "p2d: ${APP_VOLUME} was filled by another build; removing it so ${image} fills it"
+        cmd_down
+        docker volume rm "$APP_VOLUME" >/dev/null
+    fi
+    mkdir -p "$P2D_DIR"
+    printf '%s\n' "$image_id" > "$APP_STATE"
 }
 
 cmd_test() {
     local image
-    if [ "$#" -gt 0 ] && [ -n "$1" ] && [[ "$1" != -* ]]; then
+    if [ "$#" -gt 0 ] && [ -n "$1" ] && [[ "$1" != -* ]] && ! is_test_path "$1"; then
         image="$(image_of "$1")"; shift
     elif [ -f "$PIN_FILE" ]; then
         [ "$#" -eq 0 ] || [ -n "$1" ] || shift
@@ -189,9 +229,19 @@ cmd_test() {
         image="$(image_of main)"
     fi
 
-    local holder
-    holder="$(docker ps --filter publish=3579 --format '{{.Names}}' | grep -v "^chemotion-test-${SUFFIX}-" || true)"
-    [ -z "$holder" ] || die "port 3579 is held by: ${holder//$'\n'/, }. Stop that stack first."
+    local holder port
+    for port in 3579 54320; do
+        holder="$(docker ps --filter "publish=${port}" --format '{{.Names}}' | grep -v "^chemotion-test-${SUFFIX}-" || true)"
+        [ -z "$holder" ] || die "port ${port} is held by: ${holder//$'\n'/, }. Stop that stack first."
+        # Not a container (a local Postgres, say): compose up would fail on the bind much later.
+        if [ -z "$(docker ps --filter "publish=${port}" --format '{{.Names}}')" ] \
+           && { exec 3<>"/dev/tcp/127.0.0.1/${port}"; } 2>/dev/null; then
+            exec 3>&-
+            die "port ${port} is in use by a process outside docker. Stop it first."
+        fi
+    done
+
+    fresh_app_volume "$image"
 
     [ "$#" -gt 0 ] || set -- -m "" -q
     echo "p2d: testing against ${image}"
