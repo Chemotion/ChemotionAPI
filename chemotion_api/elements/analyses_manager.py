@@ -4,9 +4,19 @@ import json
 import os
 import uuid
 
+from chemotion_api.connection import request_error
 from chemotion_api.utils import resource_path
 
 MAX_UPLOAD_SIZE = 5000
+
+
+def _check_upload_response(res, context: str):
+    """Raise if an upload request failed: :class:`PermissionError` on 401, otherwise a
+    :class:`~chemotion_api.connection.ChemotionRequestError` (a :class:`ConnectionError`)."""
+    if res.status_code == 401:
+        raise PermissionError(f'Not allowed to upload the file: 401 -> {res.text} ({context})')
+    if res.status_code not in (200, 201):
+        raise request_error(res, context)
 
 
 class AnalysesManager:
@@ -72,16 +82,10 @@ class AnalysesManager:
                 res = session.post('/api/v1/attachments/upload_chunk', data={'key': key, 'counter': counter},
                                    files=payload)
                 counter += 1
-                if res.status_code == 401:
-                    raise PermissionError('Not allowed to delete device (Only for super devices or admins)')
-                elif (res.status_code != 200 and res.status_code != 201):
-                    raise ConnectionError()
+                _check_upload_response(res, f'uploading chunk {counter} of {file_name!r}')
             data = {'key': key, 'filename': file_name, 'checksum': hash_md5.hexdigest()}
             res = session.post('/api/v1/attachments/upload_chunk_complete',
                                data=data)
-            if res.status_code == 401:
-                raise PermissionError('Not allowed to delete device (Only for super devices or admins)')
-            elif (res.status_code != 200 and res.status_code != 201):
-                raise ConnectionError(f'{res.status_code} -> {res.text}')
+            _check_upload_response(res, f'completing the upload of {file_name!r}')
 
             return data
