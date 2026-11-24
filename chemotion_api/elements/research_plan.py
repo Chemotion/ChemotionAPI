@@ -56,10 +56,13 @@ class Table(dict):
     """
 
     def __init__(self, id: str, value: dict, start_collapsed: bool = False):
-        value = {
+        # Keep every key the ELN stored (the web editor's AG Grid `columnStates`, for one);
+        # `startCollapsed` is held beside the value.
+        value = dict(value) | {
             'columns': value.get('columns', []),
             'rows': value.get('rows', [])
         }
+        value.pop('startCollapsed', None)
         super().__init__(value=value, type=BodyElements.table.value, id=id, startCollapsed=start_collapsed)
 
     @property
