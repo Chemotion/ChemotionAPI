@@ -3,7 +3,7 @@ import uuid
 
 from chemotion_api.connection import Connection, request_error
 from chemotion_api.elements.attachments import Attachment
-import magic
+from chemotion_api.utils import guess_mime_type
 
 class UniqueDict(dict):
 
@@ -89,10 +89,8 @@ class Inbox:
 
     def upload(self, file_path: str):
         param_name = uuid.uuid4().__str__()
-        file_magic = magic.Magic(mime=True)
-
         with open(file_path, 'rb') as fh:
-            files = [(param_name, (os.path.basename(file_path), fh, file_magic.from_file(file_path)))]
+            files = [(param_name, (os.path.basename(file_path), fh, guess_mime_type(file_path)))]
             res = self._con.post('/api/v1/attachments/upload_to_inbox', data={}, files=files)
         if not 200 <= res.status_code < 300:
             raise request_error(res, f'uploading {os.path.basename(file_path)} to the inbox')
