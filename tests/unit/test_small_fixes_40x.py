@@ -51,3 +51,21 @@ def test_a_failed_chunk_says_what_failed(tmp_path):
 def test_a_failed_completion_says_what_failed(tmp_path):
     with pytest.raises(ConnectionError, match='completing the upload'):
         _upload(tmp_path, 200, complete_status=422)
+
+
+# F12: ElementManager
+
+def test_a_failed_klass_listing_raises_a_request_error_with_the_status():
+    from chemotion_api.element_manager import ElementManager
+    em = ElementManager(SimpleNamespace(get=lambda url, **kw: _response(500, 'boom', 'GET')))
+    with pytest.raises(ChemotionServerError, match='500') as err:
+        em.get_all_classes()
+    assert isinstance(err.value, requests.exceptions.RequestException)  # what it raised before
+
+
+def test_get_next_shot_label_works_on_an_instance(monkeypatch):
+    from chemotion_api.element_manager import ElementManager
+    em = ElementManager(SimpleNamespace())
+    monkeypatch.setattr(em, '_get_short_label', lambda type_name: f'API-{type_name}-1')
+    assert em.get_next_shot_label('sample', None) == 'API-sample-1'
+    assert em.get_next_shot_label('sample') == 'API-sample-1'
