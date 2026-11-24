@@ -45,6 +45,12 @@ class Select:
 
     @property
     def option_layers(self) -> str:
+        """The key of the option set in the template's ``select_options``, ``'-su03-'`` for the ELN's
+        users, or ``''`` if the template has no option set yet. A new field gets the first option set.
+
+        :raises ValueError: when set to a key the template does not have (add it with
+            :meth:`~chemotion_api.labImotion.items.genericproperties.GenericProperties.add_select_option`)
+        """
         return self._option_layers
 
     @option_layers.setter
@@ -89,6 +95,12 @@ class SystemDefined:
 
     @property
     def value_system(self) -> str:
+        """The default unit, a unit key of :attr:`option_layers` (see
+        :data:`chemotion_api.labImotion.items.options.UNITS`). A bare number written to an element gets this
+        unit.
+
+        :raises ValueError: when set to a unit that is not one of the unit type
+        """
         if self._value_system is None:
             available_units = get_unit(self.option_layers)
             self._value_system = available_units[0] if available_units else None
@@ -112,6 +124,12 @@ class SystemDefined:
 
     @property
     def option_layers(self) -> FieldUnit | str:
+        """The unit type (:class:`~chemotion_api.labImotion.items.options.FieldUnit`, or its string).
+        A new field gets ``FieldUnit.ACCELERATION``. Setting it resets :attr:`value_system` to the first unit
+        of the type if the current one does not belong to it.
+
+        :raises ValueError: for an unknown unit type
+        """
         if self._option_layers is None:
             return FieldUnit.ACCELERATION
         return self._option_layers
@@ -146,6 +164,9 @@ class Numeric:
 
     @property
     def numeric(self) -> dict | None:
+        """``{'decimals': int >= 0, 'min': number or '', 'max': number or ''}``, or None. Values written
+        to a ``number`` field or column of an element are checked against it (a number field without
+        ``numeric`` takes integers only; ``integer`` fields ignore it). Other keys of the dict are kept."""
         return self._numeric
 
     @numeric.setter

@@ -34,12 +34,13 @@ Values by field type
 
 * **select**: the option key. The option label is accepted as well and stored as key.
 * **system-defined**: ``{'value': ..., 'unit': ...}``. A bare number gets the default unit of the field.
-* **integer**: a whole number.
-* **text** and other fields: stored as they are.
+* **number**: a number, checked against the field's decimals and range.
+* **select-multi**: a list of option keys; **checkbox**: ``True``/``False``; **table**: a list of rows.
 
-Changed select, system-defined and integer values are checked against the template when the element is saved;
-an invalid value raises a ``ValueError``. Values loaded from the server are never rejected, even if they
-do not fit the template anymore.
+Segment fields take the same values as the fields of generic elements and datasets; every field type is
+listed in :doc:`GenericFieldValues`. Changed values are checked against the template when the element is
+saved; an invalid value raises a ``ValueError``. Values loaded from the server are never rejected, even if
+they do not fit the template anymore.
 
 For segment values in reaction variations, see :doc:`ReactionDetails`.
 

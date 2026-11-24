@@ -56,27 +56,19 @@ available::
     general = klass.properties.add_new_layer('General')
     general.add_field(FieldType.TEXT, 'Strain')
     general.add_field(FieldType.SELECT, 'Growth medium', options=['LB', 'TB'])
-    klass.properties.add_new_layer('Cultivation').add_field(FieldType.INTEGER, 'Temperature (°C)')
+    klass.properties.add_new_layer('Cultivation').add_field(FieldType.NUMBER, 'Temperature (°C)')
     klass.save(SaveActionType.MINOR)   # release; SaveActionType.DRAFT only stores the template
 
     elem = collection.new_generic_by_label('Micro Biology')
     elem.properties['General']['Strain'] = 'E. coli K12'
     elem.save()
 
+Every field type and its settings, layers, restrictions, releases, segment and dataset klasses are
+described in :doc:`LabIMotionTemplates`; the value each field type takes in an element in
+:doc:`GenericFieldValues`.
+
 Notes:
 
-* Layer and field keys are generated from the labels (``'Temperature (°C)'`` -> ``temperature_c``) unless
-  given with ``key=`` / ``field=``. Keys must be unique.
-* A SELECT field uses a select option list of the template. ``options=[...]`` creates one for the field;
-  shared lists are created with ``klass.properties.add_select_option(key, values)`` and linked by
-  ``field.option_layers = key``.
-* ``field.required`` and ``field.default`` are stored in the template.
-* ``field.ontology`` links a field to an ontology term, like "Link to ontology terminology" in the template
-  designer. Terms come from the TIB Terminology Service (NFDI4Chem collection), the same service the
-  Chemotion UI uses: set a term ID (``'CHMO:0000593'``, short form or IRI; it is looked up online), a term
-  dict from :meth:`~chemotion_api.labImotion.GenericManager.search_ontology_terms`, or ``None`` to remove the
-  link. ``add_field(..., ontology=...)`` does the same. On elements, ``elem.field(layer, field).ontology``
-  (and ``elem.segments.field(...).ontology``) returns the term of the template.
 * Elements address their fields by the labels of the template version they were created with. After a
   label change, existing elements keep the old names; unknown names raise a ``ValueError`` on save.
 * The ``description`` is stored as ``desc``; the short label prefix is ``klass.klass_prefix``.
@@ -84,10 +76,18 @@ Notes:
   :meth:`GenericElementKlass.load_all` to get the error instead.
 * Element types are cached by the instance. :meth:`~chemotion_api.collection.Collection.new_generic_by_label`
   reloads them if a label is unknown; ``instance.element_manager.reload()`` does it explicitly.
+* ``field.ontology`` links a field to an ontology term (see :doc:`LabIMotionTemplates`). On elements,
+  ``elem.field(layer, field).ontology`` (and ``elem.segments.field(...).ontology``) returns the term of the
+  template.
+* Generic elements take no comments, private notes or literature references and have no version history
+  in the ELN; those calls raise ``ValueError``. The client has no user-label support for them (see
+  :doc:`GenericFieldValues`).
 
 .. autoclass:: chemotion_api.labImotion.GenericManager
     :members: get_element, get_segment, get_dataset, load_all_elements, load_all_segments, load_all_datasets,
-        create_new_element, search_ontology_terms, get_ontology_term
+        create_new_element, create_new_segment, upload_elements_json, upload_segment_json, hub_templates,
+        import_hub_template, submit_to_hub, published_templates, active_element_names, search_ontology_terms,
+        get_ontology_term, write_all_validation_schemas
 
 .. autoclass:: chemotion_api.elements.generic_element.GenericElement
     :members:

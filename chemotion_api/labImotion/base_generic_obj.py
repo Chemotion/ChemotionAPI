@@ -25,6 +25,9 @@ class KlassRevision:
     submitted: bool | None = None
 
 class GenericObj(ChemotionSerializable):
+    """The common part of element, segment and dataset klasses (templates): :attr:`label`, :attr:`desc`,
+    :attr:`version`, :attr:`is_active`, the editable template :attr:`properties` and the read-only
+    :attr:`release`."""
     url = None
     url_create = None
     url_upload = None
@@ -61,12 +64,20 @@ class GenericObj(ChemotionSerializable):
         return self._json_data
 
     def save(self, save_type_action: SaveActionType = SaveActionType.DRAFT):
+        """
+        Sends the template (:attr:`properties`) and, for element and segment klasses, the general
+        attributes (label, description, icon, prefix) to the server. Sent right away.
+
+        :param save_type_action: ``DRAFT`` stores the template; ``MINOR`` or ``MAJOR`` also release it as a
+            new version, which new elements then use
+        """
         if self.url_save_template is not None:
             self.save_template(save_type_action)
         if self.url_save is not None:
             self.save_generale_properties()
 
     def save_template(self, save_type_action: SaveActionType = SaveActionType.DRAFT):
+        """Sends only the template (``POST /api/v1/generic_elements/update_template``), see :meth:`save`."""
         if self.url_save_template is None:
             raise TypeError('Save template is not supported')
         res = self._connection.post(self.url_save_template, data=self.to_dict() | {
@@ -78,6 +89,7 @@ class GenericObj(ChemotionSerializable):
             raise ConnectionError(f"{res.status_code} -> {res.text}")
 
     def save_generale_properties(self):
+        """Sends only the general attributes (element and segment klasses), see :meth:`save`."""
         if self.url_save is None:
             raise TypeError('Save template is not supported')
         res = self._connection.post(self.url_save, data=self.to_dict())
@@ -144,13 +156,16 @@ class GenericObj(ChemotionSerializable):
         return file_path
 
     def activate(self):
+        """Activates the klass (sent right away). Only active klasses are offered to users."""
         self.is_active = True
 
     def deactivate(self):
+        """Deactivates the klass (sent right away)."""
         self.is_active = False
 
     @property
     def label(self) -> str:
+        """The label of the klass."""
         return self._label
 
     @label.setter
@@ -161,6 +176,7 @@ class GenericObj(ChemotionSerializable):
         
     @property
     def desc(self) -> str:
+        """The description of the klass."""
         return self._desc
     
     @desc.setter
@@ -171,10 +187,13 @@ class GenericObj(ChemotionSerializable):
 
     @property
     def version(self) -> str:
+        """The version of the latest release, e.g. ``'1.1'`` (None if never released). As loaded: reload the
+        klass to see the version a save created."""
         return self._version
 
     @property
     def is_active(self) -> bool:
+        """Whether the klass is active. Setting it is sent right away."""
         return self._is_active
 
     @is_active.setter
@@ -208,6 +227,7 @@ class GenericObj(ChemotionSerializable):
 
     @property
     def properties(self) -> GenericProperties | None:
+        """The editable template (``properties_template``): layers, fields and select options."""
         return self._properties
 
     @property
@@ -273,6 +293,12 @@ class GenericObj(ChemotionSerializable):
 
     @classmethod
     def upload(cls, con: Connection, file_path: str) -> list[Self]:
+        """
+        Uploads a template JSON file (as written by :meth:`download`), like the designer's *Upload*.
+
+        :return: all klasses of the kind afterwards. Dataset klasses cannot be uploaded: for them nothing is
+            sent and the result is ``[]``
+        """
         if cls.url_create is None:
             return []
         with open(file_path) as f:

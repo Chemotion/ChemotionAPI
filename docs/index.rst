@@ -60,6 +60,8 @@ workflows that leverage the ELN's capabilities and streamline their research pro
    SbmmSampleDetails
    DeviceDescriptionDetails
    GenericElementsDetails
+   LabIMotionTemplates
+   GenericFieldValues
    Segments
    Attachments
    Analyses

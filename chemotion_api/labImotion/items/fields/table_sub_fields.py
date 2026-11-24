@@ -6,7 +6,9 @@ from chemotion_api.labImotion.items.options import SubTableFieldType
 from chemotion_api.labImotion.structure import StructureRegistry
 
 class TableSubBaseField(SubBaseField):
-    """A column of a table field."""
+    """A column of a table field: :attr:`id`, :attr:`col_name` (the heading) and the type settings of its
+    subclass. Columns are added with
+    :meth:`chemotion_api.labImotion.items.fields.fields.TableField.add_subfield`."""
     _default_required_fields = ["id", "col_name", "field_type", "value"]
     required_fields = []
 
@@ -16,6 +18,7 @@ class TableSubBaseField(SubBaseField):
 
     @property
     def col_name(self) -> str:
+        """The column heading. Rows of an element address their cells by it."""
         return self._col_name
     
     @col_name.setter
@@ -36,10 +39,13 @@ class _TSDrag(TableSubBaseField):
 
 
 class TSDragMolecule(_TSDrag):
+    """A molecule column. :attr:`value` lists the extra columns shown for the dropped molecule
+    (``'inchikey;smiles;iupac;molecular_weight;'``); set it with :meth:`set_sample_display`."""
     field_type = SubTableFieldType.DRAG_MOLECULE
 
     @property
     def value(self) -> str:
+        """The extra columns, e.g. ``'inchikey;iupac;'``. When set, unknown names are dropped."""
         return self._value
 
     @value.setter
@@ -59,6 +65,7 @@ class TSDragMolecule(_TSDrag):
         self._value = ''.join(text_display)
 
     def set_sample_display(self, inchikey: bool, smiles: bool, iupac: bool, molecular_weight: bool):
+        """Chooses the extra columns shown for the dropped molecule."""
         text_display = []
         if inchikey:
             text_display.append("inchikey;")
@@ -72,10 +79,13 @@ class TSDragMolecule(_TSDrag):
 
 
 class TSDragSample(_TSDrag):
+    """A sample column. :attr:`value` lists the extra columns shown for the dropped sample
+    (``'name;external_label;molecular_weight;'``); set it with :meth:`set_sample_display`."""
     field_type = SubTableFieldType.DRAG_SAMPLE
 
     @property
     def value(self) -> str:
+        """The extra columns, e.g. ``'name;molecular_weight;'``. When set, unknown names are dropped."""
         return self._value
 
     @value.setter
@@ -95,6 +105,7 @@ class TSDragSample(_TSDrag):
         self._value = ''.join(text_display)
 
     def set_sample_display(self, name: bool, external_label: bool, molecular_weight: bool):
+        """Chooses the extra columns shown for the dropped sample."""
         text_display = []
         if name:
             text_display.append("name;")
@@ -107,6 +118,7 @@ class TSDragSample(_TSDrag):
 
 
 class TSSelect(TableSubBaseField, Select):
+    """A select column; ``option_layers`` names the option set."""
     field_type = SubTableFieldType.SELECT
     required_fields = ['option_layers']
 
@@ -116,6 +128,8 @@ class TSSelect(TableSubBaseField, Select):
 
 
 class TSSystemDefined(TableSubBaseField, SystemDefined):
+    """A number-with-unit column: ``option_layers`` is the unit type, ``value_system`` the default
+    unit."""
     field_type = SubTableFieldType.SYSTEM_DEFINED
     required_fields = ['option_layers', 'value_system']
 
@@ -125,6 +139,7 @@ class TSSystemDefined(TableSubBaseField, SystemDefined):
 
 
 class TSText(TableSubBaseField):
+    """A text column."""
     field_type = SubTableFieldType.TEXT
 
 

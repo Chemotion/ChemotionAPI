@@ -54,6 +54,8 @@ class SubBaseField(ChemotionSerializable):
 
     @property
     def value(self) -> str:
+        """The ``value`` stored in the template: the text of a label part, the preset of other parts, and
+        for drag columns the extra columns shown."""
         return self._value
 
     @value.setter
@@ -64,6 +66,8 @@ class SubBaseField(ChemotionSerializable):
 
     @property
     def id(self) -> str:
+        """The id of the sub-field (a new one gets a UUID). Table cells of an element are stored under
+        the id of their column."""
         return self._id
 
     @id.setter
@@ -125,14 +129,18 @@ class OpaqueSubField(SubBaseField):
 
 
 class LabelField(SubBaseField):
+    """A fixed text in an input-group; the text is :attr:`value`."""
     field_type = SubFieldType.LABEL
 
 
 class TextField(SubBaseField):
+    """A text input in an input-group."""
     field_type = SubFieldType.TEXT
 
 
 class SystemDefinedField(SubBaseField, SystemDefined):
+    """A number with a unit in an input-group: ``option_layers`` is the unit type, ``value_system`` the
+    default unit, as for :class:`chemotion_api.labImotion.items.fields.fields.SystemDefinedField`."""
     field_type = SubFieldType.SYSTEM_DEFINED
     required_fields = ['option_layers', 'value_system']
 
