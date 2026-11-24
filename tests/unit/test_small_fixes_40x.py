@@ -160,3 +160,81 @@ def test_creating_a_profile_clears_the_cached_list(tmp_path):
     pm.new_profile_from_file(str(f)).save()
     pm.profiles
     assert [c for c in calls if c[0] == 'get'] == [('get', '/api/v1/converter/profiles')] * 2
+
+
+# F18: bare except clauses
+
+def test_get_or_create_collection_does_not_swallow_an_interrupt():
+    from chemotion_api.collection import AbstractCollection
+    created = []
+
+    def get_collection(*args):
+        raise KeyboardInterrupt
+    fake = SimpleNamespace(get_collection=get_collection, add_collection=created.append)
+    with pytest.raises(KeyboardInterrupt):
+        AbstractCollection.get_or_create_collection(fake, 'new')  # type: ignore[arg-type]
+    assert created == []
+
+
+def test_get_or_create_collection_does_not_create_on_an_unexpected_error():
+    from chemotion_api.collection import AbstractCollection
+    created = []
+
+    def get_collection(*args):
+        raise RuntimeError('bug')
+    fake = SimpleNamespace(get_collection=get_collection, add_collection=created.append)
+    with pytest.raises(RuntimeError):
+        AbstractCollection.get_or_create_collection(fake, 'new')  # type: ignore[arg-type]
+    assert created == []
+
+
+class _Headers(dict):
+    def get(self, key, default=None):
+        raise KeyboardInterrupt
+
+
+def _element_set(monkeypatch, headers):
+    from chemotion_api.elements import ElementSet
+    session = SimpleNamespace(get=lambda url, data=None, **kw: SimpleNamespace(
+        status_code=200, headers=headers, json=lambda: {'samples': []}))
+    monkeypatch.setattr('chemotion_api.elements.GenericSegments', lambda session: SimpleNamespace(all_classes=[]))
+    return ElementSet(session, {'name': 'sample', 'is_generic': False, 'label': 'Sample'}, 7)
+
+
+def test_loading_elements_does_not_swallow_an_interrupt(monkeypatch):
+    es = _element_set(monkeypatch, _Headers())
+    with pytest.raises(KeyboardInterrupt):
+        es.load_elements()
+
+
+def test_loading_elements_still_tolerates_bad_paging_headers(monkeypatch):
+    """Guard."""
+    es = _element_set(monkeypatch, {'X-Total-Pages': 'many', 'X-Total': None})
+    es.load_elements()
+    assert es.max_page == 1
+
+
+class _InterruptOnRead(list):
+    def __getitem__(self, idx):
+        raise KeyboardInterrupt
+
+
+class _InterruptOnWrite(list):
+    def __setitem__(self, idx, value):
+        raise KeyboardInterrupt
+
+
+@pytest.mark.parametrize('target', [_InterruptOnRead, _InterruptOnWrite])
+def test_merging_lists_does_not_swallow_an_interrupt(target):
+    from chemotion_api.utils import merge_dicts
+    merged = target([1])
+    with pytest.raises(KeyboardInterrupt):
+        merge_dicts(merged, [2])
+    assert list.__len__(merged) == 1
+
+
+def test_merging_lists_still_appends_and_overwrites():
+    """Guard."""
+    from chemotion_api.utils import merge_dicts
+    assert merge_dicts({'a': [1, {'x': 1}]}, {'a': [5, {'y': 2}, 3]}) == {'a': [5, {'x': 1, 'y': 2}, 3]}
+    assert merge_dicts([1], {'k': 2}) == [1, 2]

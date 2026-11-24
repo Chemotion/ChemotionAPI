@@ -501,7 +501,7 @@ class AbstractCollection:
 
         try:
             return self.get_collection(col_path, case_insensitive)
-        except:
+        except ModuleNotFoundError:
             new_col = self.add_collection(col_path)
             root = self.get_root()
             new_path = new_col.get_path()

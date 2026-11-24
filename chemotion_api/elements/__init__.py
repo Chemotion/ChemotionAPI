@@ -256,7 +256,7 @@ class ElementSet(list):
             self.max_page = int(res.headers.get('X-Total-Pages', 1))
             total = res.headers.get('X-Total')
             self._length = int(total) if total is not None else None
-        except:
+        except (ValueError, TypeError):
             pass
         self._loaded = True
         self.clear()
