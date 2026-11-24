@@ -5,7 +5,8 @@ Both slipped through a green integration suite, which is why they are pinned off
 * removing the side effect from ``Sample.gas_type`` also removed a guard the amount maths relied
   on — a detached sample with a gas role pushed ``None`` into the gas arithmetic;
 * adding the issue #14 type check read ``klass_name`` unconditionally, so asking for a *built-in*
-  type raised ``AttributeError`` where the call used to work.
+  type raised ``AttributeError``. A built-in type is now refused before any request, with a
+  ``ValueError`` that names its own accessor.
 
 These assert behaviour, not the source text: a test that greps the implementation passes for the
 wrong reason and fails on an equivalent rewrite.
@@ -86,23 +87,33 @@ def _instance_with(element):
     inst = Instance.__new__(Instance)
     inst._con = None
     type(inst).all_element_classes = property(
-        lambda self: {'sample': {'name': 'sample'}, 'try': {'name': 'try'}})
+        lambda self: {'sample': {'name': 'sample', 'is_generic': False},
+                      'sequence_based_macromolecule_sample': {
+                          'name': 'sequence_based_macromolecule_sample', 'is_generic': False},
+                      'try': {'name': 'try', 'is_generic': True}})
     monkey = type('ES', (), {'__init__': lambda s, *a: None,
                              'load_element': lambda s, _id: element})
     return inst, monkey
 
 
-def test_a_builtin_type_without_klass_name_is_returned(monkeypatch):
-    """`all_element_classes` holds built-ins too, and they have no `klass_name`.
+@pytest.mark.parametrize('name, accessor', [
+    ('sample', 'get_sample'),
+    ('sequence_based_macromolecule_sample', 'get_sbmm_sample'),
+])
+def test_a_builtin_type_is_refused_with_its_accessor(monkeypatch, name, accessor):
+    """`all_element_classes` holds built-ins too. `get_generic_by_name('sample', 1)` used to
+    return a `Sample` despite `-> GenericElement`; it now refuses and names the right accessor.
 
-    Reading it unconditionally turned a working call into an AttributeError.
+    This replaces a test that pinned the old behaviour (a built-in returned without an
+    AttributeError): that only guarded the #14 check, and the built-in no longer reaches it.
     """
     import chemotion_api as pkg
 
     element = object()  # deliberately has no `klass_name`
     inst, es = _instance_with(element)
     monkeypatch.setattr(pkg, 'ElementSet', es)
-    assert pkg.Instance.get_generic_by_name(inst, 'sample', 1) is element
+    with pytest.raises(ValueError, match=rf'built-in element type.*Instance\.{accessor}\(\)'):
+        pkg.Instance.get_generic_by_name(inst, name, 1)
 
 
 def test_a_mismatched_generic_type_is_refused(monkeypatch):
