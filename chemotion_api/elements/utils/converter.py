@@ -116,12 +116,16 @@ class TEMPERATURE_UNITS(UnitEnum):
     CELSIUS = '°C'
 
     def to_default_unit(self, value: float) -> float:
-        """Convert ``value`` from this temperature unit to Kelvin (the default unit, as an absolute value)."""
+        """Convert ``value`` from this temperature unit to Kelvin (the default unit).
+
+        A value below absolute zero comes back negative, as the ELN's own unit conversion
+        (``convertTemperature``) returns it.
+        """
         if self == TEMPERATURE_UNITS.FAHRENHEIT:
-            return abs((value - 32) * 5 / 9 + 273.15)
+            return (value - 32) * 5 / 9 + 273.15
         if self == TEMPERATURE_UNITS.CELSIUS:
-            return abs(value + 273.15)
-        return abs(value)
+            return value + 273.15
+        return value
 
     def to_unit(self, value: float, unit: Self) -> float:
         """Convert ``value`` from this temperature unit to ``unit``."""

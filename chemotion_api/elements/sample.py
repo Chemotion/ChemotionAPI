@@ -182,8 +182,10 @@ class GasPhaseObj(FixedDict):
 
     @property
     def temperature_in_k(self) -> float:
-        """The temperature converted to Kelvin."""
-        return convert_value_to_default(**self.data['temperature'])
+        """The temperature converted to Kelvin, as the absolute value the ELN computes gas amounts
+        with (``convertTemperatureToKelvin`` and ``Reactable#convert_temperature_to_kelvin``)."""
+        value = convert_value_to_default(**self.data['temperature'])
+        return abs(value) if value is not None else value
 
     @temperature_in_k.setter
     def temperature_in_k(self, value: float):
