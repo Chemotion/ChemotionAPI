@@ -77,19 +77,23 @@ class ElementSet(list):
             last = stop - start
             if last <= 0 or stop < 0 or start < 0:
                 raise TypeError(f"Negative index is not supported")
-            per_page = self._per_page
-            if item.start is not None:
-                self._per_page = start
-                start_page = 2
+            # Start on the page that holds `start`, at the set's own page size. Using `start` as
+            # the page size sent per_page=0 for `[0:n]` and went past the server's per_page cap
+            # for a large start. A filtered or fixed-length set is counted from its first page.
+            if self._iri_filter is not None or self._fixed_length:
+                start_page, skip = 1, start
             else:
-                self._per_page = min(10, last)
-                start_page = 1
+                start_page, skip = start // self._per_page + 1, start % self._per_page
+                if start_page > 1 and not self._loaded:
+                    self._set_page(1)        # learns the page count; until then max_page is 1
             res_list = []
             for x in self.iter_elements(start_page):
+                if skip:
+                    skip -= 1
+                    continue
                 res_list.append(x)
                 if (len(res_list) == last):
                     break
-            self._per_page = per_page
             return res_list
 
         if self._iri_filter is not None:
