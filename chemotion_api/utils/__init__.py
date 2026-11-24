@@ -4,11 +4,11 @@ import re
 import sys
 import uuid
 from abc import ABC
-from collections.abc import MutableMapping, MutableSequence
+from collections.abc import Mapping, MutableMapping, MutableSequence
 from collections import OrderedDict
 from typing import Any, Optional
 
-from chemotion_api.utils.segment_fields import SegmentField
+from chemotion_api.utils.segment_fields import SegmentField, format_datetime, to_decimal
 
 
 class PropertyDict(MutableMapping):
@@ -163,32 +163,116 @@ def add_to_dict(obj: dict, key: str, val: any) -> str:
     return key
 
 
+class TableRow(dict):
+    """
+    One row of a generic table field: ``{column name: cell value}``.
+
+    :attr:`row_id` is the id the ELN stores for the row. A row read from the server keeps it, so removing,
+    reordering or editing rows keeps the ids of the other rows. Rows added as plain dicts are new rows and get a
+    new id when they are saved.
+    """
+
+    def __init__(self, *args, row_id: str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.row_id = row_id
+
+
+#: Column names of the four sub-fields of a datetime-range field, in the order the ELN web form creates them.
+#: ``durationCalc`` is never filled by the form (it shows the computed difference without storing it).
+DATETIME_RANGE_PARTS = ('timeStart', 'timeStop', 'durationCalc', 'duration')
+_DATETIME_RANGE_VALUES = ('timeStart', 'timeStop', 'duration')
+_DURATION_DEFAULT_UNIT = 'd'
+
+
+def _plain(value: Any) -> Any:
+    """Unwraps :class:`PropertyDict` objects (also nested ones) into the dicts they hold."""
+    if isinstance(value, PropertyDict):
+        value = value.to_dict()
+    if type(value) is dict:
+        return {k: _plain(v) for k, v in value.items()}
+    if type(value) is list:
+        return [_plain(v) for v in value]
+    return value
+
+
+def _cell_value(cell: Any) -> Any:
+    """The value of a table cell stored as ``{'value': ...}``; legacy plain cells are returned as they are."""
+    if isinstance(cell, dict) and 'value' in cell:
+        return cell['value']
+    return cell
+
+
+def _read_table_cell(column: dict, cell: Any) -> Any:
+    """
+    Reads a table cell in the shape of the matching field type: text as a string, number, select key, list of
+    keys (select-multi), ``{'value', 'unit'}`` (system-defined), formula result, or the dropped molecule or
+    sample (``{'el_id', 'el_type', ...}``). Cells of unknown column types are returned as stored.
+    """
+    col_type = column.get('type')
+    if col_type == 'text':
+        return _cell_value(cell)
+    if col_type == 'select-multi':
+        keys = _cell_value(cell)
+        return list(keys) if isinstance(keys, list) else []
+    if col_type == 'system-defined':
+        stored = cell if isinstance(cell, dict) else {'value': cell}
+        return {'value': stored.get('value'), 'unit': stored.get('value_system') or column.get('value_system')}
+    if col_type in ('number', 'select', 'formula-field', 'drag_molecule', 'drag_sample'):
+        return _cell_value(cell)
+    return cell
+
+
+def _read_datetime_range(field: dict) -> dict:
+    """
+    Reads a datetime-range field as ``{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}``. Without
+    stored sub-fields it reads as the empty form: ``''`` and unit ``'d'``.
+    """
+    parts = {x.get('col_name'): x for x in field.get('sub_fields') or [] if isinstance(x, dict)}
+    duration = parts.get('duration', {})
+    return {'timeStart': parts.get('timeStart', {}).get('value', ''),
+            'timeStop': parts.get('timeStop', {}).get('value', ''),
+            'duration': {'value': duration.get('value', ''),
+                         'unit': duration.get('value_system', _DURATION_DEFAULT_UNIT)}}
+
+
 def parse_generic_field(field: dict) -> dict[str, any]:
-    sub_fields = field.get('sub_fields')
-    if type(sub_fields) is list and len(sub_fields) > 0:
+    """
+    Reads the value of one field of a generic element, segment or dataset.
+
+    The value has the shape the field type stores, see :func:`clean_generic_field`. Input groups read as a list
+    of their sub-field values, tables as a list of :class:`TableRow`.
+
+    :param field: the field dict of the layer
+    :return: ``{'values': value, 'obj_mapping': field key}``; for tables the mapping is
+        ``{'__field': field key, column name: column id}``
+    """
+    field_type = field.get('type')
+    field_key = field.get('id', field.get('field'))
+    sub_fields = [x for x in field.get('sub_fields') or [] if isinstance(x, dict)]
+    if field_type == 'input-group':
+        return {'values': [parse_generic_field(x).get('values') for x in sub_fields],
+                'obj_mapping': {'__field': field.get('field')}}
+    if field_type == 'table':
         field_mapping = {'__field': field.get('field')}
-        field_vals = None
-        if field.get('type') == 'input-group':
-            field_vals = []
-            for sub_field in sub_fields:
-                temp_sub_field = parse_generic_field(sub_field)
-                field_vals.append(temp_sub_field.get('values'))
-
-        elif field.get('type') == 'table':
-            value_list = field.get('sub_values', [])
-            field_vals = [{} for x in value_list]
-            for sub_field in sub_fields:
-                add_to_dict(field_mapping, sub_field.get('col_name'), sub_field.get('id'))
-                for (idx, value) in enumerate(value_list):
-                    add_to_dict(field_vals[idx], sub_field.get('col_name'), value[sub_field.get('id')])
-
-        return {'values': field_vals, 'obj_mapping': field_mapping}
-    elif field.get('type') == 'system-defined':
+        names = [add_to_dict(field_mapping, x.get('col_name') or x.get('id'), x.get('id')) for x in sub_fields]
+        rows = []
+        for stored in field.get('sub_values') or []:
+            if not isinstance(stored, dict):
+                continue
+            rows.append(TableRow({name: _read_table_cell(column, stored.get(column.get('id')))
+                                  for name, column in zip(names, sub_fields)}, row_id=stored.get('id')))
+        return {'values': rows, 'obj_mapping': field_mapping}
+    if field_type == 'select-multi':
+        return {'values': [x.get('value') for x in sub_fields if x.get('value') not in (None, '')],
+                'obj_mapping': field_key}
+    if field_type == 'datetime-range':
+        return {'values': _read_datetime_range(field), 'obj_mapping': field_key}
+    if field_type == 'system-defined':
         return {'values': {'value': field.get('value'), 'unit': field.get('value_system')},
-                'obj_mapping': field.get('id', field.get('field'))}
-    elif field.get('type') == 'drag_element':
-        return {'values': {'value': field.get('value')}, 'obj_mapping': field.get('id', field.get('field'))}
-    return {'values': field.get('value'), 'obj_mapping': field.get('id', field.get('field'))}
+                'obj_mapping': field_key}
+    if field_type == 'drag_element':
+        return {'values': {'value': field.get('value')}, 'obj_mapping': field_key}
+    return {'values': field.get('value'), 'obj_mapping': field_key}
 
 
 def parse_generic_layer(key: str, layer: dict) -> dict[str, dict]:
@@ -199,7 +283,7 @@ def parse_generic_layer(key: str, layer: dict) -> dict[str, dict]:
     for field in fields:
         if field.get('type') != 'wf-next':
             temp_field = parse_generic_field(field)
-            field_name = field.get('label') if len(field.get('label')) > 0 else field.get('field')
+            field_name = field.get('label') or field.get('field')
             key = add_to_dict(temp_layer, field_name, temp_field.get('values'))
             temp_id_layer[key] = temp_field.get('obj_mapping')
 
@@ -224,7 +308,7 @@ def parse_generic_object_layer_json(key, layer, values, obj_mapping) -> str:
     depend on the order the layers are read in.
     """
     temp_layer = parse_generic_layer(key, layer)
-    layer_name = layer.get('label') if len(layer.get('label')) > 0 else layer.get('key')
+    layer_name = layer.get('label') or layer.get('key')
     suffix = re.fullmatch(r'.+\.(\d+)', key or '')
     if suffix is not None and not layer_name.endswith(f".{suffix.group(1)}") and \
             f"{layer_name}.{suffix.group(1)}" not in values:
@@ -236,34 +320,268 @@ def parse_generic_object_layer_json(key, layer, values, obj_mapping) -> str:
 
 def clean_generic_field(field_obj: dict, values: Any, field_mapping: dict | str | None = None,
                         select_options: dict | None = None) -> dict[str, Any]:
-    sub_fields = field_obj.get('sub_fields')
-    if field_obj.get('type') in ('select', 'system-defined', 'integer'):
-        values = _check_generic_field_value(field_obj, values, select_options)
-    if type(sub_fields) is list and len(sub_fields) > 0:
-        if field_obj.get('type') == 'input-group':
-            for (idx, val) in enumerate(values):
-                clean_generic_field(sub_fields[idx], val)
+    """
+    Writes a value into a field of a generic element, segment or dataset, in the shape the ELN web form
+    (chem-generic-ui) stores it. A value equal to the one read from the field is kept as stored, so data
+    loaded from the server can always be saved again. Changed values are checked (see
+    :meth:`SegmentField.clean_value`) and converted:
 
-        elif field_obj.get('type') == 'table':
-            field_obj['sub_values'] = value_list = field_obj.get('sub_values', [])
-            while len(value_list) < len(values):
-                value_list.append({'id': uuid.uuid4().__str__()})
-            for (k, v) in enumerate(values):
-                for (k1, v1) in v.items():
-                    value_list[k][field_mapping[k1]] = v1
+    * select-multi: a list of option keys or labels -> ``sub_fields = [{'value': key}, ...]``
+    * datetime-range: a dict with any of ``timeStart``, ``timeStop`` (strings ``DD/MM/YYYY HH:mm:ss`` or
+      :class:`datetime.datetime`) and ``duration`` (``{'value', 'unit'}`` or a bare number in the current unit)
+      -> its four sub-fields. The duration is not derived from start and stop: the web form fills it only
+      when the user clicks its copy button.
+    * datetime: ``None`` removes the value, as clearing the date picker does. A field without a stored
+      value (dummy, text-formula) does not get one.
+    * input-group: a list of sub-field values in sub-field order
+    * table: a list of row dicts ``{column name: cell}``; the table ends up with exactly these rows, see
+      :func:`_clean_table`
+    * system-defined: ``{'value', 'unit'}`` or a bare number -> ``value`` and ``value_system``
 
-    elif field_obj.get('type') == 'system-defined':
-        field_obj['value'] = values['value']
-        field_obj['value_system'] = values['unit']
-    elif field_obj.get('type') == 'drag_element':
-        field_obj['value'] = values['value']
+    :param field_obj: the field dict of the layer; changed in place
+    :param values: the new value
+    :param field_mapping: the field's entry of the mapping from :func:`parse_generic_field`
+    :param select_options: ``select_options`` of the template
+    :return: ``field_obj``
+    :raises ValueError: if the value does not fit the field
+    """
+    values = _plain(values)
+    field_type = field_obj.get('type')
+    if field_type == 'input-group':
+        _clean_input_group(field_obj, values)
+    elif field_type == 'table':
+        _clean_table(field_obj, values, field_mapping if isinstance(field_mapping, dict) else {}, select_options)
+    elif field_type == 'select-multi':
+        _clean_select_multi(field_obj, values, select_options)
+    elif field_type == 'datetime-range':
+        _clean_datetime_range(field_obj, values)
     else:
-        field_obj['value'] = values
+        values = _check_generic_field_value(field_obj, values, select_options)
+        if field_type == 'system-defined':
+            field_obj['value'] = values['value']
+            field_obj['value_system'] = values['unit']
+        elif field_type == 'drag_element':
+            field_obj['value'] = values['value']
+        elif values is None and (field_type == 'datetime' or 'value' not in field_obj):
+            # a cleared date picker deletes the value; fields without one (dummy, text-formula) get none
+            field_obj.pop('value', None)
+        else:
+            field_obj['value'] = values
     return field_obj
 
 
+def _clean_input_group(field_obj: dict, values: Any):
+    """
+    Writes the list of sub-field values of an input group. ``number`` sub-fields must hold a number (any
+    number: the web form uses a plain number input); system-defined sub-fields are checked like
+    system-defined fields.
+    """
+    sub_fields = field_obj.get('sub_fields') or []
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(f'Input group "{field_obj.get("label")}" needs a list of {len(sub_fields)} values, '
+                         f'got {values!r}.')
+    if len(values) > len(sub_fields):
+        raise ValueError(f'Input group "{field_obj.get("label")}" has {len(sub_fields)} parts, '
+                         f'got {len(values)} values.')
+    for sub_field, value in zip(sub_fields, values):
+        current = parse_generic_field(sub_field).get('values')
+        if value == current:
+            continue
+        if sub_field.get('type') == 'system-defined':
+            clean_generic_field(sub_field, value)
+            continue
+        if sub_field.get('type') == 'number' and value not in (None, '') and to_decimal(value) is None:
+            raise ValueError(f'Input group "{field_obj.get("label")}" needs a number in part '
+                             f'{sub_fields.index(sub_field) + 1}, got {value!r}.')
+        sub_field['value'] = value
+
+
+def _clean_select_multi(field_obj: dict, values: Any, select_options: dict | None):
+    """Stores the selected options of a select-multi field in ``sub_fields`` as ``[{'value': key}]``."""
+    if values == parse_generic_field(field_obj).get('values'):
+        return
+    field = SegmentField(field_obj, '', select_options)
+    try:
+        keys = field.clean_value(values)
+    except ValueError as e:
+        raise ValueError(f'Invalid value for field "{field.label}": {e}') from None
+    field_obj['sub_fields'] = [{'value': key} for key in keys]
+
+
+def _clean_datetime_range(field_obj: dict, values: Any):
+    """Writes the parts of a datetime-range field into its four sub-fields, creating them as the web form does."""
+    label = field_obj.get('label') or field_obj.get('field')
+    current = _read_datetime_range(field_obj)
+    if values is None:
+        values = {'timeStart': '', 'timeStop': '', 'duration': {'value': '', 'unit': current['duration']['unit']}}
+    if not isinstance(values, dict):
+        raise ValueError(f'Datetime range "{label}" needs a dict with {", ".join(_DATETIME_RANGE_VALUES)}, '
+                         f'got {values!r}.')
+    unknown = [k for k in values if k not in _DATETIME_RANGE_VALUES]
+    if unknown:
+        raise ValueError(f'Datetime range "{label}" has no part {", ".join(map(str, unknown))}. '
+                         f'Parts: {", ".join(_DATETIME_RANGE_VALUES)}')
+    changed = {k: v for k, v in values.items() if v != current[k]}
+    if not changed:
+        return
+    duration = None
+    if 'duration' in changed:
+        duration = changed['duration'] if isinstance(changed['duration'], dict) else \
+            {'value': changed['duration'], 'unit': current['duration']['unit']}
+        unit = duration.get('unit') or current['duration']['unit']
+        from chemotion_api.labImotion.items.options import FieldUnit, UNITS
+        if unit not in UNITS[FieldUnit.DURATION]:
+            raise ValueError(f'"{unit}" is not a unit of the duration of "{label}". '
+                             f'Units: {", ".join(UNITS[FieldUnit.DURATION])}')
+        if duration.get('value') not in (None, '') and to_decimal(duration.get('value')) is None:
+            raise ValueError(f'The duration of "{label}" needs a number, got {duration.get("value")!r}.')
+        duration = {'value': '' if duration.get('value') is None else duration.get('value'), 'unit': unit}
+
+    sub_fields = field_obj.get('sub_fields') or []
+    for name in DATETIME_RANGE_PARTS:
+        if not any(isinstance(x, dict) and x.get('col_name') == name for x in sub_fields):
+            new_part: dict[str, Any] = {'type': 'text', 'value': '', 'col_name': name}
+            if name == 'duration':
+                new_part |= {'option_layers': 'duration', 'value_system': _DURATION_DEFAULT_UNIT}
+            sub_fields.append(new_part | {'id': str(uuid.uuid4())})
+    field_obj['sub_fields'] = sub_fields
+    parts = {x.get('col_name'): x for x in sub_fields if isinstance(x, dict)}
+    for name in ('timeStart', 'timeStop'):
+        if name in changed:
+            value = format_datetime(changed[name])
+            parts[name]['value'] = '' if value is None else value
+    if duration is not None:
+        parts['duration']['value'] = duration['value']
+        parts['duration']['value_system'] = duration['unit']
+
+
+def _new_table_cell(column: dict) -> Any:
+    """The cell a new row starts with, as the web form's ``addRow`` creates it."""
+    col_type = column.get('type')
+    if col_type == 'text':
+        return ''
+    if col_type == 'select-multi':
+        return {'value': []}
+    if col_type in ('number', 'formula-field'):
+        return {'value': ''}
+    if col_type == 'system-defined':
+        return {'value': '', 'value_system': column.get('value_system') or _first_unit(column.get('option_layers'))}
+    cell: dict[str, Any] = {'value': ''}
+    if column.get('value_system') is not None:
+        cell['value_system'] = column['value_system']
+    return cell
+
+
+def _first_unit(quantity: str | None) -> str:
+    from chemotion_api.labImotion.items.options import FieldUnit, UNITS
+    try:
+        return UNITS[FieldUnit(quantity)][0]
+    except (ValueError, KeyError, IndexError):
+        return ''
+
+
+def _clean_table_cell(column: dict, value: Any, select_options: dict | None) -> Any:
+    """
+    Converts the value of a table cell into the stored cell: text -> string; number, select, formula-field,
+    drag_molecule, drag_sample -> ``{'value': ...}``; select-multi -> ``{'value': [keys]}``; system-defined ->
+    ``{'value', 'value_system'}``. Cells given in the stored shape are accepted too. Formula cells are not
+    recomputed.
+    """
+    col_type = column.get('type')
+    field = SegmentField(column, '', select_options)
+    if col_type == 'system-defined':
+        if isinstance(value, dict) and 'value_system' in value and 'unit' not in value:
+            value = {'value': value.get('value'), 'unit': value.get('value_system')}
+        if not isinstance(value, dict):
+            value = {'value': value, 'unit': column.get('value_system') or _first_unit(column.get('option_layers'))}
+        cleaned = field.clean_value(value)
+        return {'value': '' if cleaned['value'] is None else cleaned['value'], 'value_system': cleaned['unit']}
+    if col_type == 'text':
+        value = _cell_value(value)
+        return '' if value is None else value if isinstance(value, str) else str(value)
+    if col_type in ('number', 'select', 'select-multi', 'formula-field'):
+        if isinstance(value, dict) and set(value) == {'value'}:
+            value = value['value']
+        if col_type == 'formula-field':
+            if value not in (None, '') and to_decimal(value) is None:
+                raise ValueError(f'"{field.label}" needs a number, got {value!r}.')
+            return {'value': '' if value is None else value}
+        cleaned = field.clean_value(value)
+        return {'value': '' if cleaned is None else cleaned}
+    if col_type in ('drag_molecule', 'drag_sample'):
+        if isinstance(value, dict) and set(value) == {'value'}:
+            value = value['value']
+        if value not in (None, '') and not isinstance(value, dict):
+            raise ValueError(f'"{field.label}" needs the dropped {col_type[5:]} as a dict of its el_* keys, '
+                             f'got {value!r}.')
+        return {'value': '' if value is None else value}
+    return value
+
+
+def _clean_table(field_obj: dict, rows: Any, field_mapping: dict, select_options: dict | None):
+    """
+    Writes the rows of a table field. The table ends up with exactly the given rows, in the given order. A
+    :class:`TableRow` read from this table keeps its id and its stored cells, and only changed cells are
+    rewritten; any other row is a new row with a new id, starting from the web form's empty cells.
+
+    :raises ValueError: for an unknown column name or a cell that does not fit its column
+    """
+    label = field_obj.get('label') or field_obj.get('field')
+    if rows is None:
+        rows = []
+    if not isinstance(rows, (list, tuple)):
+        raise ValueError(f'Table "{label}" needs a list of rows, got {rows!r}.')
+    columns = {x.get('id'): x for x in field_obj.get('sub_fields') or [] if isinstance(x, dict)}
+    names = {k: v for k, v in field_mapping.items() if not k.startswith('__')}
+    stored_rows = {x.get('id'): x for x in field_obj.get('sub_values') or [] if isinstance(x, dict)}
+    new_rows = []
+    used_ids = set()
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError(f'Table "{label}" needs each row as a dict {{column name: value}}, got {row!r}.')
+        row_id = getattr(row, 'row_id', None)
+        stored = stored_rows.get(row_id) if row_id not in used_ids else None
+        if stored is None:
+            stored = {'id': str(uuid.uuid4())}
+            stored |= {col_id: _new_table_cell(column) for col_id, column in columns.items()}
+        else:
+            stored = copy.deepcopy(stored)
+        used_ids.add(stored['id'])
+        for name, value in row.items():
+            col_id = names.get(name)
+            if col_id is None or col_id not in columns:
+                raise ValueError(f'Table "{label}" has no column "{name}". Columns: {", ".join(names)}')
+            column = columns[col_id]
+            value = _plain(value)
+            if value == _read_table_cell(column, stored.get(col_id)):
+                continue
+            try:
+                stored[col_id] = _clean_table_cell(column, value, select_options)
+            except ValueError as e:
+                raise ValueError(f'Invalid value in table "{label}", column "{name}": {e}') from None
+        new_rows.append(stored)
+    field_obj['sub_values'] = new_rows
+
+
+def select_options_of(json_data: dict) -> dict:
+    """
+    The select options of a generic element, segment or dataset. The ELN does not keep ``select_options`` in
+    a saved record's ``properties``, so they are taken from its template release (``properties_release``)
+    when ``properties`` has none.
+    """
+    return (json_data.get('properties') or {}).get('select_options') or \
+        (json_data.get('properties_release') or {}).get('select_options') or {}
+
+
 def clean_generic_object_json(segment_json_data: dict, values: dict, mapping: dict):
+    """
+    Writes the values of a generic element, segment or dataset (``{layer: {field: value}}`` as read by
+    :func:`parse_generic_object_json`) back into its JSON data, see :func:`clean_generic_field`.
+
+    :raises ValueError: for an unknown layer or field name or a value that does not fit its field
+    """
     properties: dict = segment_json_data['properties']
+    select_options = select_options_of(segment_json_data)
     for (k, v) in values.items():
         layer_mapping = mapping.get(k, {})
         layer_key = layer_mapping.get('__key')
@@ -284,14 +602,15 @@ def clean_generic_object_json(segment_json_data: dict, values: dict, mapping: di
                 available = [name for name in layer_mapping if not name.startswith('__')]
                 raise ValueError(f'Unknown field "{value_name}" in layer "{k}". Fields are named as in the template '
                                  f'version the element uses. Available: {", ".join(available)}')
-            clean_generic_field(field_obj, value_ob, field_mapping, properties.get('select_options'))
+            clean_generic_field(field_obj, value_ob, field_mapping, select_options)
 
 
 def _check_generic_field_value(field_obj: dict, values: Any, select_options: dict | None) -> Any:
     """
-    Checks a changed value of a select, system-defined or integer field against the template and
-    returns it in the stored format. Unchanged values are returned as they are, so data loaded from
-    the server can always be saved again.
+    Checks a changed value of a field with a single value (select, system-defined, number, integer, checkbox,
+    datetime, ontology-select, ...) against the template and returns it in the stored format, see
+    :meth:`SegmentField.clean_value`. Unchanged values are returned as they are, so data loaded from the server
+    can always be saved again.
     """
     current: Any
     if field_obj.get('type') == 'system-defined':

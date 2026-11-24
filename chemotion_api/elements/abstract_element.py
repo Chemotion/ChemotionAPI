@@ -30,7 +30,7 @@ from chemotion_api.elements.versions import Version, load_versions
 from chemotion_api.generic_segments import GenericSegments
 from chemotion_api.utils.segment_fields import SegmentField, iter_fields
 from chemotion_api.utils import safe_join, add_to_dict, parse_generic_object_json, AttrAccessMixin, \
-    clean_generic_object_json, merge_dicts, snake_to_camel_case, fixeddict_serializer, PropertyDict
+    clean_generic_object_json, merge_dicts, snake_to_camel_case, fixeddict_serializer, PropertyDict, select_options_of
 
 import logging
 
@@ -1572,7 +1572,8 @@ class AbstractElement:
         mapping = self._segments_mapping.get(segment)
         if mapping is not None:
             segment_json = next(x for x in (self.json_data or {}).get('segments', []) if x.get('id') == mapping['__id'])
-            properties = segment_json.get('properties', {})
+            # a saved segment's properties have no select_options; they are in its release
+            properties = segment_json.get('properties', {}) | {'select_options': select_options_of(segment_json)}
         else:
             # A segment the element does not have yet: look the field up in the template
             klass = next((x for x in self._generic_segments.all_classes if x.get('label') == segment

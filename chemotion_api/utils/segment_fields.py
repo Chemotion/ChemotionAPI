@@ -11,13 +11,53 @@ between the two formats Chemotion stores:
   ``{'type', 'label', 'options', 'value', 'unit', 'quantity'}`` stored under
   ``'layer<layer key>field<field key>'``, and a select field holds the option **label**
 """
+import datetime
 from collections.abc import Iterator
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 # Field types the variations grid of the Chemotion frontend shows as columns.
 VARIATION_FIELD_TYPES = ('integer', 'system-defined', 'select', 'text')
 
 _EMPTY = (None, '')
+
+#: ``option_layers`` of a select field whose options are the ELN's users ("System user list"); its value is a
+#: user id.
+USER_LIST = '-su03-'
+
+#: How the ELN web form writes a date and time: ``new Date(x).toLocaleString('en-GB')`` without the comma.
+DATETIME_FORMAT = '%d/%m/%Y %H:%M:%S'
+
+
+def format_datetime(value: Any) -> Any:
+    """
+    Returns a :class:`datetime.datetime` or :class:`datetime.date` as the ELN web form stores it
+    (``DD/MM/YYYY HH:mm:ss``). Any other value is returned as it is.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.strftime(DATETIME_FORMAT)
+    if isinstance(value, datetime.date):
+        return datetime.datetime.combine(value, datetime.time()).strftime(DATETIME_FORMAT)
+    return value
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    """
+    Reads a number as the ELN web form does: numbers and numeric strings, with a single ``,`` as the decimal
+    separator. Returns None for anything else (also for booleans and for ``inf``/``nan``).
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if value.count(',') > 1 or value.count('.') > 1 or (',' in value and '.' in value):
+            return None
+        value = value.replace(',', '.')
+    try:
+        number = Decimal(str(value)) if isinstance(value, float) else Decimal(value)
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return number if number.is_finite() else None
 
 
 class SegmentField:
@@ -40,7 +80,8 @@ class SegmentField:
 
     @property
     def label(self) -> str:
-        return self._field.get('label') or self.key
+        """The label of the field, or the column name of a table column."""
+        return self._field.get('label') or self._field.get('col_name') or self.key
 
     @property
     def type(self) -> str:
@@ -64,11 +105,20 @@ class SegmentField:
     def variation_key(self) -> str:
         return f'layer<{self.layer_key}>field<{self.key}>'
 
+    @property
+    def numeric(self) -> dict:
+        """
+        The ``numeric`` settings of a number field: ``{'decimals', 'min', 'max'}``. A number field without
+        them takes integers only, as in the ELN web form.
+        """
+        return self._field.get('numeric') or {}
+
     def options(self) -> list[dict[str, str]]:
         """
-        :return: options of a select field as ``[{'key': ..., 'label': ...}]``
+        :return: options of a select or select-multi field as ``[{'key': ..., 'label': ...}]``. Empty for a
+            field that lists the ELN's users (``option_layers`` ``'-su03-'``)
         """
-        if self.type != 'select':
+        if self.type not in ('select', 'select-multi'):
             raise TypeError(f'Field "{self.label}" is a {self.type} field, not a select field.')
         options = self._select_options.get(self.quantity, {}).get('options', [])
         return [{'key': o.get('key'), 'label': o.get('label', o.get('key'))} for o in options]
@@ -104,16 +154,33 @@ class SegmentField:
 
     def clean_value(self, value: Any) -> Any:
         """
-        Checks a value for this field and returns it in segment format: the option key for select
-        fields and ``{'value': ..., 'unit': ...}`` for system-defined fields. A system-defined field
-        given a bare number gets the field's default unit.
+        Checks a value for this field and returns it in segment format, as the ELN web form stores it:
+
+        * select: the option **key** (an option may be given by key or label). A field listing the ELN's
+          users takes a user id, stored as a string.
+        * select-multi: a list of option keys, without duplicates
+        * system-defined: ``{'value': ..., 'unit': ...}``. A bare number gets the field's default unit.
+        * number: a number, rounded to no more than ``numeric['decimals']`` places and within
+          ``numeric['min']``/``['max']``; ``''`` for no value
+        * integer: an integral number (stored as given)
+        * checkbox: ``True`` or ``False``
+        * datetime: a ``DD/MM/YYYY HH:mm:ss`` string; a :class:`datetime.datetime` is converted to it
+        * ontology-select: the label of the chosen ontology term (a string)
+
+        Other types are returned as they are.
 
         :raises ValueError: if the value does not fit the field
         """
         if self.type == 'select':
-            return value if value in _EMPTY else self.option_key(value)
+            if value in _EMPTY:
+                return value
+            return str(value) if self.quantity == USER_LIST else self.option_key(value)
+        if self.type == 'select-multi':
+            return self._clean_select_multi(value)
         if self.type == 'system-defined':
             return self._clean_system_defined(value)
+        if self.type == 'number':
+            return self._clean_number(value)
         if self.type == 'integer' and value not in _EMPTY:
             try:
                 is_integer = float(value) == int(float(value))
@@ -121,7 +188,50 @@ class SegmentField:
                 is_integer = False
             if not is_integer:
                 raise ValueError(f'"{self.label}" needs an integer, got {value!r}.')
+        if self.type == 'checkbox' and not isinstance(value, bool):
+            raise ValueError(f'"{self.label}" needs True or False, got {value!r}.')
+        if self.type == 'datetime':
+            return format_datetime(value)
+        if self.type == 'ontology-select' and value is not None and not isinstance(value, str):
+            raise ValueError(f'"{self.label}" needs the label of an ontology term (a string), got {value!r}.')
         return value
+
+    def _clean_select_multi(self, value: Any) -> list[str]:
+        if value in _EMPTY:
+            return []
+        if isinstance(value, (str, int)):
+            value = [value]
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError(f'"{self.label}" needs a list of options, got {value!r}.')
+        keys: list[str] = []
+        for item in value:
+            if item in _EMPTY:
+                continue
+            key = str(item) if self.quantity == USER_LIST else self.option_key(item)
+            if key not in keys:
+                keys.append(key)
+        return keys
+
+    def _clean_number(self, value: Any) -> Any:
+        if value in _EMPTY:
+            return ''
+        number = to_decimal(value)
+        if number is None:
+            raise ValueError(f'"{self.label}" needs a number, got {value!r}.')
+        numeric = self.numeric
+        try:
+            decimals = max(int(numeric.get('decimals') or 0), 0)
+        except (TypeError, ValueError):
+            decimals = 0
+        exponent = number.normalize().as_tuple().exponent
+        if isinstance(exponent, int) and -exponent > decimals:
+            raise ValueError(f'"{self.label}" takes at most {decimals} decimal place(s), got {value!r}.')
+        lowest, highest = to_decimal(numeric.get('min')), to_decimal(numeric.get('max'))
+        if lowest is not None and number < lowest:
+            raise ValueError(f'"{self.label}" must be at least {numeric.get("min")}, got {value!r}.')
+        if highest is not None and number > highest:
+            raise ValueError(f'"{self.label}" must be at most {numeric.get("max")}, got {value!r}.')
+        return int(number) if number == number.to_integral_value() else float(number)
 
     def _clean_system_defined(self, value: Any) -> dict:
         if isinstance(value, dict):
