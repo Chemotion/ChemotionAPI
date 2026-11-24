@@ -69,3 +69,28 @@ def test_get_next_shot_label_works_on_an_instance(monkeypatch):
     monkeypatch.setattr(em, '_get_short_label', lambda type_name: f'API-{type_name}-1')
     assert em.get_next_shot_label('sample', None) == 'API-sample-1'
     assert em.get_next_shot_label('sample') == 'API-sample-1'
+
+
+# F14: temperature conversion
+
+def test_a_temperature_below_absolute_zero_is_not_turned_positive():
+    from chemotion_api.elements.utils.converter import convert_value
+    assert convert_value(-300, '°C', 'K') == pytest.approx(-26.85)
+    assert convert_value(-300, '°C', '°F') == pytest.approx(-508)
+    assert convert_value(-5, 'K', '°C') == pytest.approx(-278.15)
+
+
+def test_valid_temperatures_convert_as_before():
+    """Guard."""
+    from chemotion_api.elements.utils.converter import convert_value
+    assert convert_value(25, '°C', 'K') == pytest.approx(298.15)
+    assert convert_value(212, '°F', '°C') == pytest.approx(100)
+
+
+def test_gas_phase_kelvin_stays_absolute_like_the_eln():
+    """Guard: the ELN computes gas amounts with |T in K| (frontend convertTemperatureToKelvin,
+    backend Reactable#convert_temperature_to_kelvin), so the client keeps doing that there."""
+    from chemotion_api.elements.sample import GasPhaseObj
+    data = {**GasPhaseObj.default_val, 'temperature': {'unit': '°C', 'value': -300}}
+    assert GasPhaseObj(None, data).temperature_in_k == pytest.approx(26.85)  # type: ignore[arg-type]
+    assert GasPhaseObj(None).temperature_in_k is None  # type: ignore[arg-type]
