@@ -1,9 +1,12 @@
-from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined, Select
+import re
+
+from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined, Select, Numeric
 from chemotion_api.labImotion.items.fields.sub_fields import SubBaseField
 from chemotion_api.labImotion.items.options import SubTableFieldType
 from chemotion_api.labImotion.structure import StructureRegistry
 
 class TableSubBaseField(SubBaseField):
+    """A column of a table field."""
     _default_required_fields = ["id", "col_name", "field_type", "value"]
     required_fields = []
 
@@ -22,13 +25,21 @@ class TableSubBaseField(SubBaseField):
         self._col_name = value
 
 
-class TSDragMolecule(TableSubBaseField):
+class _TSDrag(TableSubBaseField):
+    """A drag column; ``value`` lists the extra columns shown for the dropped item, ';'-separated."""
+
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        if 'value' in json_data:
+            # Normalised only when set from user code: a loaded template is saved as it was.
+            self._value = json_data['value']
+
+
+class TSDragMolecule(_TSDrag):
     field_type = SubTableFieldType.DRAG_MOLECULE
 
     @property
     def value(self) -> str:
-        if self._value is None or self._value == '':
-            self._value = ';'
         return self._value
 
     @value.setter
@@ -60,13 +71,11 @@ class TSDragMolecule(TableSubBaseField):
         self.value = ''.join(text_display)
 
 
-class TSDragSample(TableSubBaseField):
+class TSDragSample(_TSDrag):
     field_type = SubTableFieldType.DRAG_SAMPLE
 
     @property
     def value(self) -> str:
-        if self._value is None or self._value == '':
-            self._value = ';'
         return self._value
 
     @value.setter
@@ -117,3 +126,101 @@ class TSSystemDefined(TableSubBaseField, SystemDefined):
 
 class TSText(TableSubBaseField):
     field_type = SubTableFieldType.TEXT
+
+
+class TSNumber(TableSubBaseField, Numeric):
+    """A number column. New columns get ``numeric = {decimals: 0, min: '', max: ''}`` like in the designer;
+    see :meth:`Numeric.set_numeric`."""
+    field_type = SubTableFieldType.NUMBER
+    required_fields = ['numeric']
+
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        Numeric.__init__(self, json_data)
+        if self._numeric is None:
+            self._numeric = {'decimals': 0, 'min': '', 'max': ''}
+
+
+class TSSelectMulti(TableSubBaseField, Select):
+    """A multiple-choice column; ``option_layers`` names the option set."""
+    field_type = SubTableFieldType.SELECT_MULTI
+    required_fields = ['option_layers']
+
+    def __init__(self, sr: StructureRegistry,  layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        Select.__init__(self, sr, json_data)
+
+
+class TSFormulaField(TableSubBaseField):
+    """A column computed from number and system-defined columns of the same row.
+
+    The formula uses abbreviations that :meth:`add_ref` binds to columns, e.g.::
+
+        mass = table.add_subfield(SubTableFieldType.NUMBER, 'Mass')
+        total = table.add_subfield(SubTableFieldType.FORMULA_FIELD, 'Double mass')
+        total.add_ref(mass, 'm')
+        total.formula = 'm*2'
+    """
+    field_type = SubTableFieldType.FORMULA_FIELD
+    required_fields = ['formula', 'decimal', 'refs']
+    #: The column types a formula can use (the designer's ``rl``).
+    ref_types = (SubTableFieldType.NUMBER, SubTableFieldType.SYSTEM_DEFINED)
+
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        self._formula = json_data.get('formula', '')
+        self._decimal = json_data.get('decimal', 5)
+        self._refs = json_data.get('refs', [])
+
+    @property
+    def formula(self) -> str:
+        """The expression, in the abbreviations of :attr:`refs` (``**`` or ``^`` for powers)."""
+        return self._formula
+
+    @formula.setter
+    def formula(self, value: str):
+        if not isinstance(value, str):
+            raise TypeError(f"formula {type(value)} not supported")
+        self._formula = value
+
+    @property
+    def decimal(self) -> int:
+        """The number of decimal places of the result (default 5)."""
+        return self._decimal
+
+    @decimal.setter
+    def decimal(self, value: int):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"decimal must be an integer >= 0, not {value!r}")
+        self._decimal = value
+
+    @property
+    def refs(self) -> list[dict]:
+        """The columns the formula uses: ``[{id: <column id>, abbr: <name in the formula>}]``."""
+        return self._refs
+
+    @refs.setter
+    def refs(self, value: list[dict]):
+        if not isinstance(value, list) or not all(isinstance(r, dict) and 'id' in r and 'abbr' in r for r in value):
+            raise TypeError("refs must be a list of {'id': ..., 'abbr': ...} dicts")
+        self._refs = value
+
+    def add_ref(self, column: TableSubBaseField, abbr: str) -> dict:
+        """
+        Lets the formula use ``column`` under the name ``abbr``.
+
+        :param column: a number or system-defined column of the same table
+        :param abbr: the name used in the formula (letters, digits, '_'; not starting with a digit)
+        :return: the new reference
+
+        :raises ValueError: if the column type cannot be used or the name is invalid or taken
+        """
+        if column.field_type not in self.ref_types:
+            raise ValueError(f"Only {', '.join(t.value for t in self.ref_types)} columns can be used in a formula")
+        if not isinstance(abbr, str) or re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_]*', abbr) is None:
+            raise ValueError(f"abbr must be a name of letters, digits and '_', not {abbr!r}")
+        if any(r['abbr'] == abbr for r in self._refs):
+            raise ValueError(f"abbr {abbr!r} is already used")
+        ref = {'id': column.id, 'abbr': abbr}
+        self._refs = [r for r in self._refs if r['id'] != column.id] + [ref]
+        return ref

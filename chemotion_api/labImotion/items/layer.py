@@ -1,9 +1,10 @@
 import re
+import warnings
 from enum import Enum
 
 from chemotion_api.labImotion.items.condition_handler import ConditionHandler
 from chemotion_api.labImotion.items.fields import BaseField, field_factory, FieldType, create_field
-from chemotion_api.labImotion.items.fields.fields import SelectField
+from chemotion_api.labImotion.items.fields.abstract_fields import Select
 from chemotion_api.labImotion.items.options import LayerColor
 from chemotion_api.labImotion.items.validation import validate_generic_layer
 from chemotion_api.labImotion.structure import StructureRegistry
@@ -11,6 +12,14 @@ from chemotion_api.labImotion.utils import ChemotionSerializable, all_instances_
 
 
 class Layer(ChemotionSerializable, ConditionHandler):
+    """A layer (section) of a template.
+
+    :meth:`to_dict` writes the modelled attributes over the layer as it was loaded, so keys this client
+    does not model (``label_fields``, ``wf_info``, ``ai`` and the like) are saved unchanged.
+    """
+    #: Attributes written by :meth:`to_dict` (besides the restrictions) when they were loaded or set.
+    _attributes = ('key', 'label', 'color', 'style', 'cols', 'position', 'wf', 'wf_position', 'timeRecord', 'fields')
+
     @classmethod
     def generate_new_layer(cls, sr: StructureRegistry, key: str, label: str):
         return cls(sr, {
@@ -42,25 +51,40 @@ class Layer(ChemotionSerializable, ConditionHandler):
         self._fields = []
         self._sr = sr
 
-        for key, value in json_data.items():
+        # The key first: the fields take their layer key from it.
+        for key, value in sorted(json_data.items(), key=lambda item: item[0] != 'key'):
             if hasattr(self, key):
                 setattr(self, key, value)
+        #: Attributes set after loading that the loaded layer did not have.
+        self._set_attributes: set[str] = set()
+
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in self._attributes and hasattr(self, '_set_attributes'):
+            self._set_attributes.add(name)
 
     def add_field(self, field_type: FieldType, label: str, field: str = "", idx: int = -1,
                   options: list[str] | None = None, ontology: dict | str | None = None) -> BaseField:
         """
-        Adds a new field to the layer.
+        Adds a new field to the layer, set up as the template designer sets up a new field of that type.
 
         >>> layer.add_field(FieldType.TEXT, 'Strain')
         >>> layer.add_field(FieldType.SELECT, 'Medium', options=['LB', 'TB'])
         >>> layer.add_field(FieldType.TEXT, 'NMR method', ontology='CHMO:0000593')
+        >>> layer.add_field(FieldType.NUMBER, 'Replicates').set_numeric(decimals=0, min=1)
+
+        For a number use ``FieldType.NUMBER``. ``FieldType.INTEGER`` also creates a ``number`` field (with
+        0 decimal places) and warns: the designer (chem-generic-ui 2.3.2) offers only "Number" and turns
+        every ``integer`` field into ``number`` with ``numeric.decimals = 0`` whenever it saves a template,
+        so an ``integer`` field would not survive the next save in the web interface anyway. Templates
+        that already contain ``integer`` fields load and save unchanged.
 
         :param field_type: the type of the field
         :param label: the label shown in Chemotion
         :param field: the key of the field. If empty, it is generated from the label
         :param idx: the position in the layer. Negative values append the field
-        :param options: only for SELECT fields: creates a new select option list (option layer) with these
-            entries and links the field to it
+        :param options: only for SELECT and SELECT_MULTI fields: creates a new select option list (option layer)
+            with these entries and links the field to it
         :param ontology: an ontology term (dict or term ID) linked to the field, see :attr:`BaseField.ontology`
         :return: the new field
 
@@ -71,12 +95,16 @@ class Layer(ChemotionSerializable, ConditionHandler):
             field = generate_key(label, all_keys, max_len=40, fallback='field')
         elif field in all_keys:
             raise ValueError(f'A field with the key "{field}" already exists in layer "{self.key}"')
-        if options is not None and field_type != FieldType.SELECT:
-            raise ValueError('options are only supported for SELECT fields')
+        if options is not None and field_type not in (FieldType.SELECT, FieldType.SELECT_MULTI):
+            raise ValueError('options are only supported for SELECT and SELECT_MULTI fields')
+        if field_type == FieldType.INTEGER:
+            warnings.warn('The integer field type is deprecated in LabIMotion; a number field with 0 decimal '
+                          'places is created instead. Use FieldType.NUMBER.', DeprecationWarning, stacklevel=2)
+            field_type = FieldType.NUMBER
 
         new_field = create_field(self._sr, self.key, field_type, label, idx, field)
         new_field.ontology = ontology
-        if isinstance(new_field, SelectField) and options is not None:
+        if isinstance(new_field, Select) and options is not None:
             properties = self._sr.get_properties()
             if properties is None:
                 raise ValueError('options can only be added to a template with properties')
@@ -101,15 +129,20 @@ class Layer(ChemotionSerializable, ConditionHandler):
         validate_generic_layer(json_data)
 
     def to_dict(self) -> dict:
-        for key, _ in self._json_data.items():
-            if hasattr(self, key):
-                value = getattr(self, key)
-                if isinstance(value, Enum):
-                    value = value.value
-                if all_instances_of(value, ChemotionSerializable):
-                    self._json_data[key] = [x.to_dict() for x in value]
-                else:
-                    self._json_data[key] = value
+        """The layer as the server stores it.
+
+        :return: the layer as a ``dict``
+        """
+        keys = [key for key in self._attributes if key in self._json_data or key in self._set_attributes]
+        for key in keys:
+            value = getattr(self, key)
+            if isinstance(value, Enum):
+                value = value.value
+            if all_instances_of(value, ChemotionSerializable):
+                self._json_data[key] = [x.to_dict() for x in value]
+            else:
+                self._json_data[key] = value
+        self._write_conditions(self._json_data)
         return self._json_data
 
     @property
@@ -127,11 +160,15 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def timeRecord(self) -> str:
+        """The time recorded for the layer in an element ("Record time", ``DD/MM/YYYY HH:mm:ss``); ``''`` in
+        a new template."""
         return self._timeRecord
 
     @timeRecord.setter
-    def timeRecord(self, time_rec):
-        pass
+    def timeRecord(self, time_rec: str):
+        if not isinstance(time_rec, str):
+            raise TypeError('timeRecord must be a string')
+        self._timeRecord = time_rec
 
     @property
     def wf(self) -> bool:

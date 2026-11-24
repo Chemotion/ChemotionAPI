@@ -10,14 +10,31 @@ from chemotion_api.labImotion.structure import StructureRegistry
 from chemotion_api.labImotion.utils import all_instances_of, ChemotionSerializable
 
 
+def _drop_if_cleared(data: dict, key: str) -> None:
+    """Remove ``key`` from a serialized item whose attribute was set to None.
+
+    An empty value the item was loaded with ('' / [] / {} / False / None) is kept as it was, so that a
+    template that is only loaded and saved again comes back unchanged.
+    """
+    if data.get(key):
+        del data[key]
+
+
 class BaseField(ChemotionSerializable, ConditionHandler):
+    """A field of a template layer.
+
+    :meth:`to_dict` writes the modelled attributes over the field as it was loaded, so keys this client
+    does not model (set in the web designer, or added by a later LabIMotion) are saved unchanged.
+    """
     _default_required_fields = ["field_type", "field", "required", "label", "default", "position", "sub_fields",
                                 "text_sub_fields"]
-    _default_optional_fields = ["cols", "cond_fields", "cond_operator", "ontology"]
+    _default_optional_fields = ["cols", "ontology", "description", "hasOwnRow", "readonly"]
     required_fields = []
     optional_fields = []
     field_type = FieldType.TEXT
     mapping = {"field_type": "type"}
+    #: Types for which the designer does not offer "Has its own line" (chem-generic-ui ``S42``).
+    _no_own_row_types = (FieldType.DUMMY, FieldType.TABLE)
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         ConditionHandler.__init__(self, sr)
@@ -31,6 +48,11 @@ class BaseField(ChemotionSerializable, ConditionHandler):
         self._layer_key = layer_key
         self._cols = None
         self._ontology: dict | None = None
+        self._description: str | None = None
+        self._hasOwnRow: bool | None = None
+        self._readonly: bool | None = None
+        self._sub_fields: list = []
+        self._text_sub_fields: list[dict] = []
 
     def _parse_json(self):
         """Populate this field from its server payload.
@@ -64,26 +86,34 @@ class BaseField(ChemotionSerializable, ConditionHandler):
         return self._layer_key
 
     def to_dict(self) -> dict:
-        self._json_data = {}
+        """The field as the server stores it: the loaded payload with the modelled attributes written over it.
+
+        :return: the field as a ``dict``
+        """
+        data = dict(self._json_data)
         for key in self._default_required_fields + self.required_fields:
             json_key = self.mapping.get(key, key)
             value = getattr(self, key)
             if isinstance(value, Enum):
                 value = value.value
-            if all_instances_of(value, ChemotionSerializable):
-                self._json_data[json_key] = [x.to_dict() for x in value]
+            if isinstance(value, list) and value and all_instances_of(value, ChemotionSerializable):
+                data[json_key] = [x.to_dict() for x in value]
             else:
-                self._json_data[json_key] = value
+                data[json_key] = value
 
         for key in self._default_optional_fields + self.optional_fields:
             json_key = self.mapping.get(key, key)
             value = getattr(self, key, None)
-            if value is not None:
-                if isinstance(value, Enum):
-                    value = value.value
-                self._json_data[json_key] = value
+            if value is None:
+                _drop_if_cleared(data, json_key)
+                continue
+            if isinstance(value, Enum):
+                value = value.value
+            data[json_key] = value
 
-        return self._json_data
+        self._write_conditions(data)
+        self._json_data = data
+        return data
 
     @property
     def cols(self) -> int:
@@ -171,17 +201,63 @@ class BaseField(ChemotionSerializable, ConditionHandler):
         self._required = value
 
     @property
+    def description(self) -> str | None:
+        """The hover info of the field ("Hover Info" in the designer), or None."""
+        return self._description
+
+    @description.setter
+    def description(self, value: str | None):
+        if value is not None and not isinstance(value, str):
+            raise TypeError(f"description {type(value)} not supported")
+        self._description = value
+
+    @property
+    def hasOwnRow(self) -> bool | None:
+        """Whether the field takes a line of its own ("Has its own line" in the designer), or None if unset.
+        The designer does not offer it for dummy and table fields."""
+        return self._hasOwnRow
+
+    @hasOwnRow.setter
+    def hasOwnRow(self, value: bool | None):
+        if value is not None and not isinstance(value, bool):
+            raise TypeError(f"hasOwnRow {type(value)} not supported")
+        if value is not None and self.field_type in self._no_own_row_types:
+            raise ValueError(f"hasOwnRow is not available for {self.field_type.value} fields")
+        self._hasOwnRow = value
+
+    @property
+    def readonly(self) -> bool | None:
+        """Whether the field is shown read-only in the element form, or None if unset. The designer offers
+        it for text fields (where the placeholder is then shown as plain text); the form honours it for
+        every field type."""
+        return self._readonly
+
+    @readonly.setter
+    def readonly(self, value: bool | None):
+        if value is not None and not isinstance(value, bool):
+            raise TypeError(f"readonly {type(value)} not supported")
+        self._readonly = value
+
+    @property
     def sub_fields(self) -> list:
-        return []
+        """The sub-fields as loaded (for types whose sub-fields this client does not model, e.g. the
+        values of a select-multi or the parts of a datetime-range)."""
+        return self._sub_fields
 
     @sub_fields.setter
     def sub_fields(self, value: list):
-        pass
+        if not isinstance(value, list):
+            raise TypeError(f"sub_fields {type(value)} not supported")
+        self._sub_fields = value
 
     @property
     def text_sub_fields(self) -> list[dict]:
-        return []
+        """The fields a text-formula field joins (``[{id, layer, field, separator}]``); empty for other
+        types, as the designer saves them."""
+        return self._text_sub_fields
 
     @text_sub_fields.setter
     def text_sub_fields(self, value: list[dict]):
-        pass
+        if not isinstance(value, list) or not all(isinstance(x, dict) for x in value):
+            raise TypeError("text_sub_fields must be a list of dicts")
+        self._text_sub_fields = value

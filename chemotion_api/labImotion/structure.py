@@ -18,14 +18,19 @@ class StructureRegistry:
     def get_properties(self) -> GenericProperties | None:
         return self._obj().properties
 
-    def get_structure(self) -> dict[str, dict[str, FieldType]]:
+    def get_structure(self) -> dict[str, dict[str, FieldType | str]]:
+        """The field types of the template by layer key and field key. A type this client does not know is
+        given as its string."""
         res = {}
         props = self.get_properties()
         if props is None:
             for _, layer in self._obj()._json_data['properties_template']['layers'].items():
                 res[layer['key']] = {}
                 for field in layer['fields']:
-                    res[layer['key']][field['field']] = FieldType(field['type'])
+                    try:
+                        res[layer['key']][field['field']] = FieldType(field['type'])
+                    except ValueError:
+                        res[layer['key']][field['field']] = field['type']
         else:
             layers = props.layers
             for l in layers:

@@ -4,7 +4,7 @@ from chemotion_api.labImotion.items.fields.base import BaseField
 from chemotion_api.labImotion.items.fields.fields import TextField, CheckboxField, DatetimeField, DatetimeRangeField, \
     DragSampleField, DragMoleculeField, DragElementField, FormulaFieldField, InputGroupField, IntegerField, SelectField, \
     SystemDefinedField, TableField, TextFormulaField, TextareaField, UploadField, DummyField, \
-    SelectMultiField, OpaqueField
+    SelectMultiField, OpaqueField, NumberField, OntologySelectField
 from chemotion_api.labImotion.items.options import FieldType
 from chemotion_api.labImotion.structure import StructureRegistry
 
@@ -27,6 +27,8 @@ def field_factory(sr: StructureRegistry, layer_key: str, json_data) -> BaseField
 
 
 def create_field(sr: StructureRegistry, layer_key: str, field_type: FieldType, label: str, position: int, field: str) -> BaseField:
+    """A new field as the template designer creates it (``{type, field, label, default, position}`` plus the
+    settings the designer adds for the type)."""
     return _field_factory(sr, layer_key, field_type, {'type': field_type.value, 'label': label, 'field': field, 'position': position})
 
 
@@ -52,6 +54,10 @@ def _field_factory(sr: StructureRegistry, layer_key: str, field_type: FieldType,
             return InputGroupField(sr, layer_key, json_data)
         case FieldType.INTEGER:
             return IntegerField(sr, layer_key, json_data)
+        case FieldType.NUMBER:
+            return NumberField(sr, layer_key, json_data)
+        case FieldType.ONTOLOGY_SELECT:
+            return OntologySelectField(sr, layer_key, json_data)
         case FieldType.SELECT:
             return SelectField(sr, layer_key, json_data)
         case FieldType.SELECT_MULTI:

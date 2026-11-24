@@ -73,7 +73,7 @@ class GenericProperties(ChemotionSerializable):
             for value in values:
                 if not isinstance(value, Layer):
                     raise TypeError(f"layers -> list[{type(value)}] not supported")
-                self._layers.append(value)
+            self._layers = list(values)
 
         self._layers.sort(key=lambda x: x.position)
 

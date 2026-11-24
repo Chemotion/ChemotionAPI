@@ -67,9 +67,28 @@ generic_schema = {
         },
         "layer": {
             "type": ["string", "object", "null"]
+        },
+        # Written by chem-generic-ui 2.3.2 (designer and element form of LabIMotion 2.3.4).
+        "label_fields": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "wf_uuid": {
+            "type": ["string", "null"]
+        },
+        "wf_info": {
+            "type": ["object", "null"]
+        },
+        "ai": {
+            "type": ["array", "null"]
         }
     },
-    "additionalProperties": False,
+    # Open, like the designer's own `urn:labimotion:schemas:layers` (additionalProperties: true): the
+    # designer and the element form add keys (`label_fields`, `wf_info`, `ai`, legacy `cond`/`op`), and a
+    # closed schema made every template with such a layer unloadable. Known keys are still checked above.
+    "additionalProperties": True,
     # Dropped from required because v4 genuinely omits them on some layers (counts from the
     # reference instance, 534 layers): color 434, style 434, wf 337, wf_position 472,
     # timeRecord only 86. The rest are present on every layer observed.
