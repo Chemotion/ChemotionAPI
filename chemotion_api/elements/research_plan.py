@@ -79,10 +79,14 @@ class Table(dict):
         """
         return self['id']
 
-    def _get_col_id(self):
+    def _get_col_id(self) -> str:
+        # The first free letter 'a'-'z'; once all are taken, a UUID, as the web editor
+        # (ResearchPlanDetailsFieldTable.buildColumnSimple) gives every column it adds.
+        taken = {x['colId'] for x in self['value']['columns']}
         for l in ascii_lowercase:
-            if len([x for x in self['value']['columns'] if x['colId'] == l]) == 0:
+            if l not in taken:
                 return l
+        return str(uuid.uuid4())
 
     def column_id_by_label(self, label: str) -> str:
         """
@@ -116,7 +120,8 @@ class Table(dict):
     def add_columns(self, *labels: str) -> list[str]:
         """
         Adds one or more columns to the table. It adds a column for
-        each label given as an argument. Column IDs are single letters ('a' to 'z').
+        each label given as an argument. Column IDs are single letters ('a' to 'z'); once these
+        are taken, a column gets a UUID, as in the web editor.
 
         :param labels: labels of columns to be added
         :return: list of the column IDs

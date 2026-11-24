@@ -94,3 +94,15 @@ def test_gas_phase_kelvin_stays_absolute_like_the_eln():
     data = {**GasPhaseObj.default_val, 'temperature': {'unit': '°C', 'value': -300}}
     assert GasPhaseObj(None, data).temperature_in_k == pytest.approx(26.85)  # type: ignore[arg-type]
     assert GasPhaseObj(None).temperature_in_k is None  # type: ignore[arg-type]
+
+
+# F15: research plan table columns
+
+def test_a_table_gets_a_27th_column():
+    from chemotion_api.elements.research_plan import Table
+    table = Table('t', {'columns': [], 'rows': [{}]})
+    ids = table.add_columns(*[f'C{i}' for i in range(28)])
+    assert ids[:26] == [chr(ord('a') + i) for i in range(26)]
+    assert all(isinstance(i, str) and i for i in ids)
+    assert len(set(ids)) == 28
+    assert set(table['value']['rows'][0]) == set(ids)
