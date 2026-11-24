@@ -106,3 +106,57 @@ def test_a_table_gets_a_27th_column():
     assert all(isinstance(i, str) and i for i in ids)
     assert len(set(ids)) == 28
     assert set(table['value']['rows'][0]) == set(ids)
+
+
+# F17: converter profiles
+
+PROFILE = {'id': 'p1', 'title': 'NMR', 'description': '', 'identifiers': [], 'tables': [], 'data': {}}
+
+
+def _converter_session(calls, status=200):
+    def request(method):
+        def send(url, **kwargs):
+            calls.append((method, url))
+            code = 200 if method == 'get' else status
+            return _response(code, 'refused', method.upper(), 'https://eln.example.org' + url,
+                             json={'profiles': [PROFILE]})
+        return send
+    return SimpleNamespace(**{m: request(m) for m in ('get', 'put', 'post', 'delete')})
+
+
+@pytest.mark.parametrize('action', ['save', 'delete'])
+def test_a_refused_profile_request_raises(action):
+    from chemotion_api.converter import ProfileManager
+    profile = ProfileManager(_converter_session([], status=422)).get_profile('p1')
+    with pytest.raises(ChemotionRequestError, match='422'):
+        getattr(profile, action)()
+
+
+def test_deleting_a_profile_clears_the_cached_list():
+    from chemotion_api.converter import ProfileManager
+    calls = []
+    pm = ProfileManager(_converter_session(calls))
+    pm.get_profile('p1').delete()
+    pm.get_profile('p1')
+    assert [c for c in calls if c[0] == 'get'] == [('get', '/api/v1/converter/profiles')] * 2
+
+
+def test_a_deleted_profile_is_created_again_when_saved():
+    from chemotion_api.converter import ProfileManager
+    calls = []
+    profile = ProfileManager(_converter_session(calls)).get_profile('p1')
+    profile.delete()
+    profile.save()
+    assert calls[-1] == ('post', '/api/v1/converter/profiles')
+
+
+def test_creating_a_profile_clears_the_cached_list(tmp_path):
+    import json
+    from chemotion_api.converter import ProfileManager
+    calls = []
+    pm = ProfileManager(_converter_session(calls))
+    f = tmp_path / 'p.json'
+    f.write_text(json.dumps(PROFILE))
+    pm.new_profile_from_file(str(f)).save()
+    pm.profiles
+    assert [c for c in calls if c[0] == 'get'] == [('get', '/api/v1/converter/profiles')] * 2
