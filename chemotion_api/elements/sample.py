@@ -917,7 +917,7 @@ class Sample(AbstractElement):
                 # The getter already reports OFF for a sample outside any reaction, so a detached
                 # sample never feeds a `None` vessel size into the gas arithmetic.
                 gas_type=self.gas_type,
-                vessel_size=self.vessel_size,
+                vessel_size=None if self.vessel_size is None else self.vessel_size / 1000,  # ml -> l
                 **gas_attres
             )
         except KeyError:  # the conversion needs a molecular weight the molecule does not have
