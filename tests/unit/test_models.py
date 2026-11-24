@@ -52,6 +52,12 @@ def test_molecule_cas_accepts_str_or_list():
     assert MoleculeModel(cas=["64-17-5", "200-578-6"]).cas == ["64-17-5", "200-578-6"]
 
 
+def test_molecule_cas_list_may_hold_null():
+    """The ELN sends ``cas: [null]`` for some molecules (#23); the value is kept as sent."""
+    assert MoleculeModel.model_validate({"cas": [None]}).cas == [None]
+    assert MoleculeModel.model_validate({"cas": ["50-00-0", None]}).cas == ["50-00-0", None]
+
+
 def test_molecule_names_default_is_independent_list():
     a, b = MoleculeModel(), MoleculeModel()
     a.names.append("x")
