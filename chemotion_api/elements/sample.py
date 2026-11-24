@@ -1443,7 +1443,8 @@ class Sample(AbstractElement):
                 default_set = [QuantityUnit.Liter]
             else:
                 default_set = [QuantityUnit.Gram]
-                if self.properties['density'] != 0 or self.properties['molarity']['value'] != 0:
+                # Unset is 0 or None (the model's default); either way no volume can be derived.
+                if self.properties['density'] or self.properties['molarity']['value']:
                     default_set += [QuantityUnit.Liter]
 
             if self.role_in_reaction in ['starting_materials', 'reactants']:
