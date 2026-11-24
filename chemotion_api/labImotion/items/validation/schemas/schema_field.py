@@ -50,6 +50,10 @@ generic_schema = {
         "description": {
             "type": "string"
         },
+        # Input-group sub-fields and table columns. Open like the designer's own field-base schema
+        # (`sub_fields: {type: array, items: {type: object}}`): columns carry type-specific keys
+        # (numeric, formula, decimal, refs; drag_element columns in LabIMotion 2.4) and select-multi
+        # / datetime-range keep their values here.
         "sub_fields": {
             "type": "array",
             "items": {
@@ -62,7 +66,7 @@ generic_schema = {
                         "type": "string"
                     },
                     "value": {
-                        "type": "string"
+                        "type": ["string", "number", "boolean", "object", "array", "null"]
                     },
                     "value_system": {
                         "type": "string"
@@ -73,6 +77,22 @@ generic_schema = {
                     "col_name": {
                         "type": "string"
                     },
+                    "numeric": {
+                        "$ref": "#/$defs/numeric"
+                    },
+                    "formula": {
+                        "type": "string"
+                    },
+                    "decimal": {
+                        "type": ["integer", "string"]
+                    },
+                    "refs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "abbr"]
+                        }
+                    },
                     # ELN v4 / LabIMotion 2.3 additions.
                     "_checksum": {
                         "type": ["string", "null"]
@@ -81,12 +101,7 @@ generic_schema = {
                         "type": ["boolean", "null"]
                     }
                 },
-                "additionalProperties": False,
-                # `value` is no longer required — v4 omits it on freshly added sub-fields.
-                "required": [
-                    "id",
-                    "type"
-                ]
+                "additionalProperties": True
             }
         },
         "text_sub_fields": {
@@ -133,7 +148,7 @@ generic_schema = {
             "type": "number"
         },
         "decimal": {
-            "type": "string"
+            "type": ["string", "integer"]
         },
         "formula": {
             "type": "string"
@@ -156,9 +171,49 @@ generic_schema = {
         },
         "value": {
             "type": ["string", "number", "boolean", "object", "array", "null"]
+        },
+        # Written by chem-generic-ui 2.3.2 (the designer of LabIMotion 2.3.4).
+        "numeric": {
+            "$ref": "#/$defs/numeric"
+        },
+        "value_system_base": {
+            "type": "string"
+        },
+        "ontology_term": {
+            "type": ["object", "string", "null"]
+        },
+        "sub_values": {
+            "type": "array"
+        },
+        "wf_options": {
+            "type": "array"
+        },
+        "is_voc": {
+            "type": "boolean"
         }
     },
-    "additionalProperties": False,
+    "$defs": {
+        "numeric": {
+            "type": "object",
+            "properties": {
+                "decimals": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "min": {
+                    "type": ["number", "string"]
+                },
+                "max": {
+                    "type": ["number", "string"]
+                }
+            }
+        }
+    },
+    # Open, like the designer's own `urn:labimotion:schemas:field-base`: LabIMotion stores a field as
+    # opaque JSON and the designer adds keys this schema does not know (Lab-Vocab `opid`, `source`, …).
+    # A closed schema made every template with such a field unloadable — and with it every element
+    # of the template — although the server accepts it. Known keys are still type-checked above.
+    "additionalProperties": True,
     # sub_fields / text_sub_fields dropped from required: v4 emits them only for the field types
     # that actually have sub-fields (2609 of 2792 fields in the reference instance carry them).
     # Everything below is present on every field observed, so it stays required.

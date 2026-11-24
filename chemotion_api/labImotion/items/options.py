@@ -23,9 +23,14 @@ class SubFieldType(ListableEnum):
 
 
 class SubTableFieldType(ListableEnum):
+    """The column types of a table field, as the template designer offers them
+    (chem-generic-ui 2.3.2: ``i42`` plus ``drag_sample``)."""
     DRAG_MOLECULE = "drag_molecule"
     DRAG_SAMPLE = "drag_sample"
+    FORMULA_FIELD = "formula-field"
+    NUMBER = "number"
     SELECT = "select"
+    SELECT_MULTI = "select-multi"
     SYSTEM_DEFINED = 'system-defined'
     TEXT = 'text'
 
@@ -40,7 +45,13 @@ class FieldType(ListableEnum):
     DRAG_SAMPLE = "drag_sample"
     FORMULA_FIELD = "formula-field"
     INPUT_GROUP = "input-group"
+    #: Deprecated by the template designer ("Integer (deprecated, use Number)"), which turns every
+    #: ``integer`` field into ``number`` when it saves a template. Kept so such templates load.
     INTEGER = "integer"
+    #: The designer's numeric field; its rounding and range are in ``numeric``.
+    NUMBER = "number"
+    #: A select whose options are the children of an ontology term (``ontology_term``).
+    ONTOLOGY_SELECT = "ontology-select"
     SELECT = "select"
     #: Emitted by the server but deliberately NOT declared in the gem's field_type.rb
     #: ("`select-multi` deliberately has no Labimotion::FieldType constant" —

@@ -22,8 +22,14 @@ def _report_unknown_unit(message: str) -> None:
         logger.warning("%s — value kept as-is; this client's copy trails the server.", message)
 
 
+#: The option set the designer offers as "System user list": the select lists the ELN's users and its
+#: value is a user id (chem-generic-ui ``f4``).
+SYSTEM_USER_LIST = '-su03-'
+
+
 class Select:
-    """A select field, pointing at one of its klass's ``select_options`` sets by key.
+    """A select field, pointing at one of its klass's ``select_options`` sets by key, or at
+    :data:`SYSTEM_USER_LIST`.
 
     As with units, assignment from user code is validated strictly, but parsing a server payload
     is lenient: klasses authored by older generic-ui versions routinely reference an option set
@@ -52,7 +58,7 @@ class Select:
             value = options[0] if options else ''
         if not isinstance(value, str):
             raise TypeError(f"option_layers {type(value)} not supported")
-        if value != '' and value not in options:
+        if value not in ('', SYSTEM_USER_LIST) and value not in options:
             if strict:
                 raise ValueError(f"option_layers '{value}' not in {options}. Add it with "
                                  f"properties.add_select_option(key, values)")
@@ -128,3 +134,53 @@ class SystemDefined:
         available_units = get_unit(self._option_layers)
         if available_units and self._value_system not in available_units:
             self._value_system = available_units[0]
+
+
+class Numeric:
+    """Rounding and range of a number field or column (``numeric = {decimals, min, max}``), as the
+    designer's "Max Decimal Places / Min Value / Max Value" set them. ``min``/``max`` are numbers or ``''``
+    for no limit."""
+
+    def __init__(self, json_data: dict):
+        self._numeric = json_data.get('numeric')
+
+    @property
+    def numeric(self) -> dict | None:
+        return self._numeric
+
+    @numeric.setter
+    def numeric(self, value: dict | None):
+        if value is not None:
+            if not isinstance(value, dict):
+                raise TypeError(f"numeric {type(value)} not supported")
+            value = self._check_numeric(value.get('decimals', 0), value.get('min', ''), value.get('max', '')) \
+                | {k: v for k, v in value.items() if k not in ('decimals', 'min', 'max')}
+        self._numeric = value
+
+    def set_numeric(self, decimals: int | None = None, min: float | str | None = None,
+                    max: float | str | None = None) -> dict:
+        """
+        Sets the rounding and the range of the number. Arguments left out keep their value.
+
+        :param decimals: the number of decimal places (>= 0)
+        :param min: the lowest allowed value, or '' for none
+        :param max: the highest allowed value, or '' for none
+        :return: the new ``numeric`` setting
+
+        :raises ValueError: if ``decimals`` is negative or ``min`` > ``max``
+        """
+        current = self._numeric or {'decimals': 0, 'min': '', 'max': ''}
+        self.numeric = current | {k: v for k, v in (('decimals', decimals), ('min', min), ('max', max))
+                                  if v is not None}
+        return self._numeric
+
+    @staticmethod
+    def _check_numeric(decimals, minimum, maximum) -> dict:
+        if isinstance(decimals, bool) or not isinstance(decimals, int) or decimals < 0:
+            raise ValueError(f"decimals must be an integer >= 0, not {decimals!r}")
+        for name, limit in (('min', minimum), ('max', maximum)):
+            if limit != '' and (isinstance(limit, bool) or not isinstance(limit, int | float)):
+                raise ValueError(f"{name} must be a number or '', not {limit!r}")
+        if minimum != '' and maximum != '' and minimum > maximum:
+            raise ValueError(f"min {minimum} is greater than max {maximum}")
+        return {'decimals': decimals, 'min': minimum, 'max': maximum}
