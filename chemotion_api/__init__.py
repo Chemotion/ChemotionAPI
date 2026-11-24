@@ -856,22 +856,26 @@ class Instance:
         :param id: The Database ID of the desired Element
         :return: a GenericElement object
 
-        :raises ValueError: if no generic element type has this name, or if the element with this
-            id is of a *different* generic type
+        :raises ValueError: if no generic element type has this name, if the name is that of a
+            built-in type (``sample``, ``reaction``, …; use its own accessor, e.g.
+            :meth:`get_sample`), or if the element with this id is of a *different* generic type
         :raises RequestException: (requests.exceptions.RequestException) if the information cannot be fetched. Make sure that your connection is active and you are logged in.
         """
         elem = self.all_element_classes.get(name)
         if elem is None:
             raise ValueError(f'Could not find a generic element under the name: "{name}"')
+        # Built-in types (`sample`, `reaction`, …) are in `all_element_classes` too, but they are
+        # not GenericElements, so this method must not hand them out.
+        if not elem.get('is_generic', True):
+            accessor = {'sequence_based_macromolecule_sample': 'get_sbmm_sample'}.get(name, f'get_{name}')
+            hint = f'use Instance.{accessor}() instead' if hasattr(Instance, accessor) else 'it cannot be loaded here'
+            raise ValueError(f'"{name}" is a built-in element type, not a generic one; {hint}.')
         e = ElementSet(self._con, elem)
         element = typing.cast(GenericElement, e.load_element(id))
         # The server resolves a generic element by id alone — the type in the request path does
         # not scope the lookup. So asking for `try` id 3 happily returns a `wrk` element, and
         # without this check the caller gets an object of the wrong type with no indication at
         # all (reported as issue #14). Confirmed still true on ELN v4.0.1.
-        # Built-in types (`sample`, `reaction`, …) are in `all_element_classes` too, and they are
-        # not GenericElements — they have no `klass_name`. Reading it unconditionally would turn
-        # a working call into an AttributeError.
         actual = getattr(element, 'klass_name', None)
         if actual is not None and actual != name:
             raise ValueError(
@@ -891,7 +895,8 @@ class Instance:
         :param id: The Database ID of the desired Element
         :return: a GenericElement object
 
-        :raises ValueError: if no generic element type has this label
+        :raises ValueError: if no generic element type has this label, or if the label is that of
+            a built-in type (see :meth:`get_generic_by_name`)
         :raises RequestException: (requests.exceptions.RequestException) if the information cannot be fetched. Make sure that your connection is active and you are logged in.
         """
         for (elem_name, elem) in self.all_element_classes.items():
