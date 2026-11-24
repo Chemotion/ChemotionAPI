@@ -354,7 +354,7 @@ class SampleVariation:
             self._values['amount']['value'] = (value / self._molecular_weight()) * self._values['aux']['purity']
         elif unit == QuantityUnit.Mole.value:
             self._values['amount']['value'] = value
-        elif unit == QuantityUnit.Liter.value and self._values['aux']['molarity'] != 0:
+        elif unit == QuantityUnit.Liter.value and self._values['aux']['molarity']:
             self._values['amount']['value'] = value * self._values['aux']['molarity']
         elif unit == QuantityUnit.Liter.value and self._values['aux']['density']:
             # The inverse of get_volume()'s density branch: volume -> mass -> amount. A sample

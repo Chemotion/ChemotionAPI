@@ -55,10 +55,10 @@ def _get_from_gram(current_value: float, output_unit: QuantityUnit, molecular_we
         except ZeroDivisionError:
             return float('NaN')
     if output_unit == QuantityUnit.Liter:
-        if molarity != 0:
+        if molarity:
             return _get_from_gram(current_value, QuantityUnit.Mole, molecular_weight, purity, density,
                                   molarity) / molarity
-        elif density != 0:
+        elif density:
             return current_value / (density * 1000)
 
     return float('NaN')
@@ -76,9 +76,9 @@ def _get_from_mol(current_value: float, output_unit: QuantityUnit, molecular_wei
         except ZeroDivisionError:
             return float('NaN')
     if output_unit == QuantityUnit.Liter:
-        if molarity != 0:
+        if molarity:
             return current_value / molarity
-        elif density != 0:
+        elif density:
             return _get_from_mol(current_value, QuantityUnit.Gram, molecular_weight, purity, density, molarity) / (
                         density * 1000)
 
@@ -90,19 +90,17 @@ def _get_from_liter(current_value: float, output_unit: QuantityUnit, molecular_w
     if output_unit == QuantityUnit.Liter:
         return current_value
     if output_unit == QuantityUnit.Mole:
-        if molarity != 0:
+        if molarity:
             return current_value * molarity
-        elif density != 0:
+        elif density:
             current_gram = current_value * (density * 1000)
             return _get_from_gram(current_gram, QuantityUnit.Mole, molecular_weight, purity, density, molarity)
     if output_unit == QuantityUnit.Gram:
-        if molarity != 0:
+        if molarity:
             current_gram = current_value * molarity
             return _get_from_mol(current_gram, QuantityUnit.Gram, molecular_weight, 1, density, molarity)
-        elif density != 0:
+        elif density:
             return current_value * (density * 1000)
-
-        return current_value
 
     return float('NaN')
 
@@ -121,8 +119,8 @@ def calculate_quantity(current_value: float, current_unit: QuantityUnit, output_
     :param output_unit: The desired output unit
     :param molecular_weight: Molecular weight; required for gram/mole conversions
     :param purity: Purity factor of the material
-    :param density: Density (used for liter conversions); 0 if unknown
-    :param molarity: Molarity (used for liter conversions); 0 if unknown
+    :param density: Density (used for liter conversions); 0 or ``None`` if unknown
+    :param molarity: Molarity (used for liter conversions); 0 or ``None`` if unknown
     :param gas_type: Gas role; non-OFF triggers the gas-phase calculation path
     :param vessel_size: Vessel size used for gas conversions
     :param temperature_in_k: Temperature in Kelvin used for gas conversions
