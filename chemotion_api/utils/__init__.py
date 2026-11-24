@@ -400,3 +400,19 @@ def quill_hedging(input: str | dict, name: str) -> dict[str:list]:
     if not isinstance(input, (dict, PropertyDict)) or 'ops' not in input or not isinstance(input['ops'], list):
         raise ValueError(f'{name} must be in the Quill.js format. (https://quilljs.com/docs/delta)')
     return input
+
+
+def guess_mime_type(file_path: str) -> str:
+    """The MIME type of the file at ``file_path``, for uploads.
+
+    Uses python-magic (the file's content) when it and the native libmagic are available. It is
+    imported here, not at module level, so ``import chemotion_api`` works without libmagic (e.g. on
+    Windows, issue #24); without it the type is guessed from the file extension.
+    """
+    try:
+        import magic
+        file_magic = magic.Magic(mime=True)
+    except (ImportError, OSError):
+        import mimetypes
+        return mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+    return file_magic.from_file(file_path)
