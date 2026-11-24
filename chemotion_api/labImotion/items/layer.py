@@ -110,6 +110,10 @@ class Layer(ChemotionSerializable, ConditionHandler):
                     self._json_data[key] = [x.to_dict() for x in value]
                 else:
                     self._json_data[key] = value
+        # Cleared restrictions (cond_fields = None) drop their keys, as the designer does; a null would not load again
+        for key in ('cond_fields', 'cond_operator'):
+            if key in self._json_data and self._json_data[key] is None:
+                del self._json_data[key]
         return self._json_data
 
     @property
