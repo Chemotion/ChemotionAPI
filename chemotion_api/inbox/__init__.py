@@ -3,7 +3,7 @@ import uuid
 
 from chemotion_api.connection import Connection
 from chemotion_api.elements.attachments import Attachment
-import magic
+from chemotion_api.utils import guess_mime_type
 
 class UniqueDict(dict):
 
@@ -89,9 +89,7 @@ class Inbox:
 
     def upload(self, file_path: str):
         param_name = uuid.uuid4().__str__()
-        file_magic = magic.Magic(mime=True)
-
-        files = [(param_name, (os.path.basename(file_path), open(file_path, 'rb'), file_magic.from_file(file_path)))]
+        files = [(param_name, (os.path.basename(file_path), open(file_path, 'rb'), guess_mime_type(file_path)))]
         res = self._con.post('/api/v1/attachments/upload_to_inbox', data={}, files=files)
         return res
 
