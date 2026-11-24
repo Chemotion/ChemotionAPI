@@ -8,11 +8,13 @@ _STATES = [{'colId': 'a', 'width': 350, 'hide': False, 'sort': 'asc', 'pinned': 
 
 
 def _field():
-    return {'id': 't1', 'type': 'table', 'startCollapsed': False,
+    # The ELN (3.1.4 as 4.0.2) keeps `startCollapsed` inside the value.
+    return {'id': 't1', 'type': 'table',
             'value': {'columns': [{'headerName': 'A', 'field': 'a', 'colId': 'a'}],
                       'rows': [{'a': '1'}],
                       'columnStates': _STATES,
-                      'unknownKey': {'x': 1}}}
+                      'unknownKey': {'x': 1},
+                      'startCollapsed': False}}
 
 
 def test_a_table_keeps_column_states():
@@ -35,3 +37,12 @@ def test_column_states_survive_changing_rows_and_columns():
     sent = plan._reparse_table(table)['value']
     assert sent['columnStates'] == _STATES and sent['unknownKey'] == {'x': 1}
     assert len(sent['rows']) == 2 and len(sent['columns']) == 2
+
+
+def test_a_collapsed_table_stays_collapsed():
+    plan = ResearchPlan.__new__(ResearchPlan)
+    field = _field()
+    field['value']['startCollapsed'] = True
+    table = plan._parse_table(copy.deepcopy(field))
+    assert table['startCollapsed'] is True
+    assert plan._reparse_table(table) == field

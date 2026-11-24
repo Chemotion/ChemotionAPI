@@ -57,7 +57,7 @@ class Table(dict):
 
     def __init__(self, id: str, value: dict, start_collapsed: bool = False):
         # Keep every key the ELN stored (the web editor's AG Grid `columnStates`, for one);
-        # `startCollapsed` is held beside the value.
+        # `startCollapsed` is held beside the value and put back on save.
         value = dict(value) | {
             'columns': value.get('columns', []),
             'rows': value.get('rows', [])
@@ -350,7 +350,9 @@ class ResearchPlan(AbstractElement):
         return res
 
     def _parse_table(self, value):
-        return Table(value['id'], value['value'], value.get('startCollapsed', False))
+        inner = value.get('value') or {}
+        # The ELN keeps it inside the value (`field.value.startCollapsed`).
+        return Table(value['id'], inner, inner.get('startCollapsed', value.get('startCollapsed', False)))
 
     def _parse_ketcher(self, value):
         return value
@@ -475,7 +477,10 @@ class ResearchPlan(AbstractElement):
         }
 
     def _reparse_table(self, value):
-        return dict(value)
+        out = dict(value)
+        collapsed = out.pop('startCollapsed', False)
+        out['value'] = dict(out.get('value') or {}) | {'startCollapsed': bool(collapsed)}
+        return out
 
     def _reparse_ketcher(self, value):
         return value
