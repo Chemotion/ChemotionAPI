@@ -899,10 +899,14 @@ class Instance:
             a built-in type (see :meth:`get_generic_by_name`)
         :raises RequestException: (requests.exceptions.RequestException) if the information cannot be fetched. Make sure that your connection is active and you are logged in.
         """
-        for (elem_name, elem) in self.all_element_classes.items():
-            if elem['label'] == label:
-                return self.get_generic_by_name(elem_name, id)
-        raise ValueError(f'Could not find a generic element with the label: "{label}"')
+        classes = self.all_element_classes
+        matches = [elem_name for (elem_name, elem) in classes.items() if elem.get('label') == label]
+        if not matches:
+            raise ValueError(f'Could not find a generic element with the label: "{label}"')
+        # A generic type may share its label with a built-in one, which the list holds first:
+        # take the generic type then. A label only a built-in type has is refused by name.
+        elem_name = next((x for x in matches if classes[x].get('is_generic', True)), matches[0])
+        return self.get_generic_by_name(elem_name, id)
 
     def get_json_ld_id(self, id: str) -> AbstractElement:
         """
