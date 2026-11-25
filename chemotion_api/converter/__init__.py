@@ -4,7 +4,7 @@ from uuid import uuid4
 
 import requests
 
-from chemotion_api.connection import Connection
+from chemotion_api.connection import Connection, request_error
 
 
 class Profile:
@@ -28,6 +28,8 @@ class Profile:
         self.identifiers = identifiers
         self.matchTables = matchTables
         self._is_saved = False
+        #: the manager whose cached profile list this profile is in; reset when the list changes
+        self._manager: ProfileManager | None = None
 
     def to_dict(self) -> dict:
         """
@@ -62,13 +64,17 @@ class Profile:
         Creates the profile on the server, or updates it if it already exists there.
 
         :return: response of the request
+        :raises ChemotionRequestError: if the server refuses the request
         """
         if self._is_saved:
             res = self._session.put(f'/api/v1/converter/profiles/{self.id}', data=self.to_dict())
         else:
-            res = self._session.post(f'/api/v1/converter/profiles', data=self.to_dict())
-        if res.status_code == 200 or res.status_code == 201:
+            res = self._session.post('/api/v1/converter/profiles', data=self.to_dict())
+        if res.status_code not in (200, 201):
+            raise request_error(res, f'saving converter profile {self.id}')
+        if not self._is_saved:
             self._is_saved = True
+            self._reset_manager_cache()
         return res
 
     def delete(self) -> requests.Response:
@@ -76,8 +82,18 @@ class Profile:
         Deletes the profile on the server.
 
         :return: response of the request
+        :raises ChemotionRequestError: if the server refuses the request
         """
-        return self._session.delete(f'/api/v1/converter/profiles/{self.id}')
+        res = self._session.delete(f'/api/v1/converter/profiles/{self.id}')
+        if res.status_code not in (200, 204):
+            raise request_error(res, f'deleting converter profile {self.id}')
+        self._is_saved = False
+        self._reset_manager_cache()
+        return res
+
+    def _reset_manager_cache(self):
+        if self._manager is not None:
+            self._manager._all_profiles = None
 
 
 class ProfileManager:
@@ -115,7 +131,7 @@ class ProfileManager:
         :raises ConnectionError: if the profiles cannot be loaded
         """
         if self._all_profiles is None:
-            res = self._session.get('api/v1/converter/profiles')
+            res = self._session.get('/api/v1/converter/profiles')
             if res.status_code != 200:
                 raise ConnectionError(res.text)
 
@@ -123,6 +139,7 @@ class ProfileManager:
             # Profiles from the server are updated, not created again, when saved
             for profile in self._all_profiles:
                 profile._is_saved = True
+                profile._manager = self
         return self._all_profiles
 
     def new_profile_from_file(self, file_path: str) -> Profile | None:
@@ -139,7 +156,9 @@ class ProfileManager:
                     pd = json.loads(f.read())
                     while self.get_profile(pd['id']) is not None:
                         pd['id'] = uuid4().__str__()
-                    return Profile(self._session, **pd)
+                    profile = Profile(self._session, **pd)
+                    profile._manager = self
+                    return profile
             except json.decoder.JSONDecodeError:
                 pass
         return None
