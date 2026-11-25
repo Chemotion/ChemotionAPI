@@ -98,6 +98,8 @@ GenericElement = GenericElementKlass
 
 
 class GenericSegment(GenericObj):
+    """The template (klass) of a generic segment: an extra tab of one element type (:attr:`element_klass`).
+    Its :attr:`label` and :attr:`desc` are saved with :meth:`save`."""
     url = "/api/v1/segments/list_segment_klass.json"
     url_create = "/api/v1/segments/create_segment_klass"
     url_upload = '/api/v1/segments/upload_klass'
@@ -114,6 +116,7 @@ class GenericSegment(GenericObj):
 
     @property
     def element_klass(self):
+        """The klass of the element type the segment belongs to (read only)."""
         return self._element_klass
 
     def to_dict(self) -> dict:
@@ -129,6 +132,11 @@ class GenericSegment(GenericObj):
 
 
 class GenericDataset(GenericObj):
+    """The template (klass) of a dataset's metadata form, chosen by the server from the analysis kind
+    (:attr:`ols_term_id`). Its template can be edited and released with :meth:`save`; dataset klasses
+    cannot be created or uploaded with the client, and changes to :attr:`label`, :attr:`desc` and
+    :attr:`ols_term_id` are not saved (the only route the client has for datasets, ``update_template``,
+    stores the template alone)."""
     url = "/api/v1/generic_dataset/list_dataset_klass.json"
     url_activate = "/api/v1/generic_elements/de_activate_klass"
     url_save_template = "/api/v1/generic_elements/update_template"
@@ -140,6 +148,8 @@ class GenericDataset(GenericObj):
 
     @property
     def ols_term_id(self) -> str:
+        """The ontology term of the analysis kind, e.g. ``'CHMO:0000593'``. Changing it has no effect on the
+        server."""
         return self._ols_term_id
 
     @ols_term_id.setter
@@ -231,12 +241,15 @@ class GenericManager:
         return res.json()
 
     def load_all_elements(self) -> list[GenericElementKlass]:
+        """All element klasses; klasses that cannot be parsed are skipped with a warning."""
         return GenericElementKlass.load_all(self._connection)
 
     def load_all_segments(self) -> list[GenericSegment]:
+        """All segment klasses; klasses that cannot be parsed are skipped with a warning."""
         return GenericSegment.load_all(self._connection)
 
     def load_all_datasets(self) -> list[GenericDataset]:
+        """All dataset klasses; klasses that cannot be parsed are skipped with a warning."""
         return GenericDataset.load_all(self._connection)
 
     def get_element(self, name: str = None, *, label: str = None, version: str = None,
@@ -337,9 +350,20 @@ class GenericManager:
         return filtered[0]
 
     def upload_elements_json(self, file_path: str) -> list[GenericElementKlass]:
+        """
+        Uploads an element template JSON file (from :meth:`GenericObj.download` or the designer's
+        *Download*). A template the ELN does not have yet is created inactive.
+
+        :return: all element klasses afterwards
+        """
         return GenericElementKlass.upload(self._connection, file_path)
 
     def upload_segment_json(self, file_path: str) -> list[GenericSegment]:
+        """
+        Uploads a segment template JSON file. A template the ELN does not have yet is created inactive.
+
+        :return: all segment klasses afterwards
+        """
         return GenericSegment.upload(self._connection, file_path)
 
     def create_new_element(self, label: str, icon_name: str, description: str = '', prefix: str = '', name: str = '',
@@ -391,6 +415,19 @@ class GenericManager:
         return klass
 
     def create_new_segment(self, label: str, description: str, element: GenericElementKlass) -> list[GenericSegment]:
+        """
+        Creates a segment klass for an element type. Unlike :meth:`create_new_element` it neither releases
+        nor activates it: load it with :meth:`get_segment`, add layers, ``save(SaveActionType.MINOR)`` and
+        ``activate()`` it.
+
+        :param label: the label of the segment
+        :param description: its description
+        :param element: the element klass the segment belongs to (from :meth:`load_all_elements`); it must be
+            active
+        :return: all segment klasses afterwards (not only the new one)
+
+        :raises ValueError: if the element klass is not active
+        """
         all_elements = self.load_all_elements()
         all_names = [(x.id, x.identifier) for x in all_elements if x.is_active]
         if (element.id, element.identifier) not in all_names:

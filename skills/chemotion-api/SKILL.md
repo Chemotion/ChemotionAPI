@@ -217,11 +217,58 @@ g.save()
 
 A layer used twice gets a suffix from its layer key (`three.1` -> `properties['Nr 3.1']`), stable across
 reloads; `g.wf_workflows()` lists each workflow's layers with `key`, `label` and `properties_key`.
-Templates: `instance.generic_manager().get_element('dev', version='1.0')` (also `label=`; reloads every call).
-New type: `gm.create_new_element('Micro Biology', 'bug', prefix='MB')` returns a released, active klass; add
-`k.properties.add_new_layer(...).add_field(FieldType.TEXT, 'Strain')`, then `k.save(SaveActionType.MINOR)` (see api.md §10).
+Generic elements have no comments, private notes, versions or literature (those calls raise `ValueError`)
+and no user-label support in the client.
+
+Field values (generic `properties`, segments and dataset metadata follow the same rules; only *changed*
+values are checked, on `save()`, with a `ValueError` naming the field):
+
+| Field type | Value |
+|---|---|
+| text, textarea | str (stored as given) |
+| number | number or `''`; checked against `numeric` decimals/min/max (no `numeric`: integers only) |
+| integer (old) | whole number, stored as given |
+| checkbox | `True`/`False` only |
+| select | option key; label accepted, stored as key (`'-su03-'` user list: user id) |
+| select-multi | list of option keys (labels accepted) |
+| system-defined | `{'value': 25, 'unit': 'C'}`; a bare number gets the default unit |
+| datetime | `'DD/MM/YYYY HH:mm:ss'`; `datetime` objects converted; `None` clears |
+| datetime-range | `{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}`; a partial dict changes only those parts |
+| ontology-select | the term label (str) |
+| formula-field, text-formula | stored as given, never computed |
+| input-group | list of the parts' values in order (`g.properties[l]['Group'][1] = 2`); number parts checked |
+| table | list of `TableRow` (dict `{column heading: cell}`, `.row_id`); cells shaped like the column's field type |
+| drag_element | `{'value': {el_* dict}}`; drag_sample / drag_molecule: the `el_*` dict; upload: `{'files': [...]}` |
+
+Tables end up with exactly the rows given: `rows.append({...})`, `del rows[1]`, reorder - kept rows keep
+their id. `g.field(layer, field)` gives the template field (`.type`, `.options()`, `.units()`, `.numeric`).
+
+Templates (admin; `gm = instance.generic_manager()`, enums from `chemotion_api.labImotion.items.options`,
+`FieldType` from `...items.fields`):
+
+```python
+k = gm.create_new_element('Micro Biology', 'bug', prefix='MB')   # released (empty 0.1) and active
+layer = k.properties.add_new_layer('Cultivation')                 # key generated from the label
+layer.add_field(FieldType.NUMBER, 'Replicates').set_numeric(decimals=0, min=1)
+layer.add_field(FieldType.SELECT, 'Medium', options=['LB', 'TB'])  # also SELECT_MULTI
+t = layer.add_field(FieldType.SYSTEM_DEFINED, 'Temp'); t.option_layers = FieldUnit.TEMPERATURE; t.value_system = 'K'
+tbl = layer.add_field(FieldType.TABLE, 'Runs'); tbl.add_subfield(SubTableFieldType.NUMBER, 'Mass')
+done = layer.add_field(FieldType.CHECKBOX, 'Done')
+layer.add_field(FieldType.TEXT, 'Notes').add_condition(done, True)   # shown only if Done
+k.save(SaveActionType.MINOR)                                       # release; DRAFT only stores
+```
+
+- `add_field(FieldType.INTEGER, ...)` creates a `number` field and warns (DeprecationWarning).
+- Restrictions: source field checkbox (bool), text, select (key or label -> key) or ontology-select;
+  `cond_operator = ConditionOperator.MATCH_ALL`; `cond_fields = None` clears. The client does not evaluate them.
+- Templates made in the web designer load and save without losing keys (since PR #40).
+- `gm.create_new_segment(label, desc, element_klass)` creates an unreleased, inactive segment klass;
+  dataset klasses cannot be created, uploaded or renamed - only their template edited and released.
+- Not supported: uploading files into upload fields, filling drag fields from `Sample`/`Molecule` objects,
+  computing formulas, editing the workflow graph, LabIMotion 2.4 features (cover images, sharing, AI).
 Ontology terms on fields: `field.ontology = 'CHMO:0000593'` (or `add_field(..., ontology=...)`); search with
 `gm.search_ontology_terms('nmr')`; read on elements with `g.field(layer, field).ontology`.
+See api.md §10.
 
 ## Segments (extra tabs, all element types)
 
@@ -236,9 +283,10 @@ s.segments.options('Electrochemistry', 'Cell', 'Electrode type')      # [{'key',
 s.segments.units('Electrochemistry', 'Cell', 'Temperature')           # ['C', 'F', 'K']
 cell['Electrode type'] = 'disk'                    # select: key or label (stored as key)
 cell['Temperature'] = {'value': 25, 'unit': 'C'}   # system-defined; a bare number gets the default unit
-cell['Cycles'] = 3                                 # integer
+cell['Cycles'] = 3                                 # number/integer (checked against the template)
 s.save()                                           # invalid changed values raise ValueError here
 ```
+Value shapes of every field type: see the table under Generic elements.
 
 `segments['Properties']` and `segments['Analyses']` are the same objects as `properties` / `analyses`.
 
@@ -312,6 +360,7 @@ for v in el.versions(): v.changes; v.revert()             # field-level history
 el.references(); el.add_reference(doi='10.1000/x'); col.references(); instance.doi_metadata(doi)
 el.properties['user_labels'] = [label.id]; el.save()              # label = instance.save_user_label(...)
 ```
+None of these work on generic elements (`ValueError`; labels: no client support).
 
 ## More element types
 
@@ -395,7 +444,9 @@ instance.profile(); instance.set_short_label_counter('samples', 100); instance.c
   comments, references, labels, chemicals, measurements, vessels, exports and admin calls.
 - Background jobs (export, import, reports) have no job id; the client waits for the matching
   notification. Re-running one creates a second job.
-- `ValueError` from `save()` usually means a segment value does not fit its field; the message names the field.
+- `ValueError` from `save()` usually means a segment or generic field value does not fit its field; the
+  message names the field. Select values are option keys (labels are converted); a table assignment
+  replaces all rows.
 - Changes the ELN would drop without an error are refused with `ValueError`: reaction-link fields
   (`reference`, `coefficient`, `waste`, ...) saved through `sample.save()` instead of `reaction.save()`, a
   saved sample's `short_label`, a reaction's RInChI.

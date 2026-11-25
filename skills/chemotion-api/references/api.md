@@ -282,28 +282,64 @@ Templates (`instance.generic_manager()`): `get_element(name=None, *, label=None,
 KeyError lists the matches/available templates. The template class is `labImotion.GenericElementKlass`
 (old name `labImotion.GenericElement` still works), not the element class `elements.GenericElement`.
 
-Authoring a template (admin; `FieldType` from `labImotion.items.fields`, `SaveActionType` from `labImotion.items.options`):
+Authoring a template (admin; `FieldType` from `labImotion.items.fields`; `SaveActionType`, `SubFieldType`,
+`SubTableFieldType`, `FieldUnit`, `LayerColor`, `ConditionOperator`, `ElementType` from `labImotion.items.options`):
 
 ```
 k = gm.create_new_element(label, icon_name, description='', prefix='', name='', release=True, activate=True)
     # -> the new GenericElementKlass; release/activate make it usable right away (empty v0.1)
-layer = k.properties.add_new_layer(label, key='', idx=-1)          # key generated from label; ValueError if taken
-layer.add_field(FieldType.X, label, field='', idx=-1, options=None) # options=[...] only for SELECT
-k.properties.add_select_option(key, values) -> key                 # shared list; link via field.option_layers = key
-field.label / .required / .default                                 # stored in the template
+gm.create_new_segment(label, desc, element_klass) -> [all segment klasses]   # unreleased + inactive: get_segment,
+    # add layers, seg.save(SaveActionType.MINOR), seg.activate()
+k.properties                      # GenericProperties: .layers, .select_options, .add_new_layer, .add_select_option
+k.release                         # released template (read only)
+layer = k.properties.add_new_layer(label, key='', idx=-1)          # key from label; ValueError if taken
+layer.key / .label / .cols / .position / .color (LayerColor) / .style ('panel_generic_heading[_b|u|i]')
+layer.wf / .wf_position / .timeRecord                              # workflow graph (flowObject) not editable
+layer.add_field(FieldType.X, label, field='', idx=-1, options=None, ontology=None) -> field
+    # options=[...] only for SELECT / SELECT_MULTI; INTEGER -> a NUMBER field + DeprecationWarning
+k.properties.add_select_option(name, values) -> key                # keys = labels; link via field.option_layers = key
+k.properties.select_options = {... , 'media': {'options': [{'key': 'lb', 'label': 'LB broth'}]}}  # distinct labels
+field.option_layers = '-su03-'                                     # select of the ELN's users
+field.label / .required / .default / .cols / .description / .hasOwnRow / .readonly / .placeholder (text, number)
 field.ontology = 'CHMO:0000593' | term_dict | None                 # ontology term; ID looked up online (TIB TS)
-layer.add_field(FieldType.TEXT, 'NMR method', ontology='CHMO:0000593')
+number.set_numeric(decimals=None, min=None, max=None)              # numeric = {'decimals', 'min', 'max'}
+sysdef.option_layers = FieldUnit.TEMPERATURE; sysdef.value_system = 'K'   # default unit (UNITS[...])
+formula.formula = 'mass_a*2'; formula.decimal = 3; formula.canAdjust      # keys of number/integer/system-defined
+    # fields of the SAME layer
+text_formula.add_text_sub_field(text_field_or_key, layer=None, separator='.')
+onto_select.ontology_term = term_dict | 'CHMO:0000228' | {'value', 'label'}
+group.add_subfield(SubFieldType.LABEL | NUMBER | TEXT | SYSTEM_DEFINED)   # label: .value = 'OD'
+table.add_subfield(SubTableFieldType.TEXT | NUMBER | SELECT | SELECT_MULTI | SYSTEM_DEFINED | FORMULA_FIELD
+                   | DRAG_MOLECULE | DRAG_SAMPLE, col_name) -> column
+formula_col.add_ref(number_or_sysdef_col, 'm'); formula_col.formula = 'm*2'
+drag_col.set_sample_display(...)   # molecule: inchikey, smiles, iupac, molecular_weight; sample: name,
+                                   # external_label, molecular_weight
+field_or_layer.add_condition(src_field, value, label='')           # src: checkbox (bool), text, select (key or
+    # label -> key), ontology-select; .cond_operator = ConditionOperator.MATCH_ALL|MATCH_ONE|MATCH_NONE;
+    # .cond_fields = None clears; not evaluated by the client
 gm.search_ontology_terms('nmr', rows=30) -> [term]                 # same search as the template designer
 gm.get_ontology_term(obo_id | short_form | iri) -> term            # KeyError if unknown
     # term: {'iri', 'label', 'obo_id', 'short_form', 'ontology_prefix', 'ontology_name', 'description', 'id', 'type'}
 k.klass_prefix / k.desc / k.label / k.icon_name
-k.save(SaveActionType.MINOR)   # release (new elements use the latest release); DRAFT only stores
-k.is_active = True / False
+k.save(SaveActionType.MINOR)   # release (new elements use the latest release); DRAFT only stores; MAJOR
+k.validate(k.to_dict())        # schema check; save() does not validate
+k.is_active = True / False     # sent right away (also .activate() / .deactivate())
+gm.upload_elements_json(path) / gm.upload_segment_json(path) -> all klasses   # new ones are inactive
 instance.element_manager.reload()   # drop cached types (new_generic_by_label also reloads on a miss)
 ```
 
+Templates saved in the web designer load and save without losing keys (unmodelled keys are kept; `None`
+removes a modelled attribute). Dataset klasses (`gm.get_dataset(ols_term_id=...)`): template edit and
+release, (de)activate, revisions, download, delete, hub import - but no create, no upload
+(`GenericDataset.upload` returns `[]`), and `label`/`desc`/`ols_term_id` changes are not saved.
+Not supported: files into upload fields, drag fields from client objects, computing formulas, existing
+elements to a newer template version, LabIMotion 2.4 features (cover images, sharing, AI, drag_element columns).
+
 Elements address fields by the labels of *their* template version; unknown layer/field names raise
 ValueError on save. `load_all_elements()` skips invalid templates with a warning (`load_all(con, strict=True)`).
+Generic elements: `.comments()`, `.add_comment()`, `.private_note()`, `.versions()`, `.references()` raise
+ValueError (the ELN has none for them); `user_labels_resolved` is `[]` and `properties['user_labels']` is an
+unknown layer.
 
 ## 11. Segments (`element.segments`)
 
@@ -315,9 +351,24 @@ segments.field(seg, layer, field) -> SegmentField   # .type, .ontology, .options
 segments.field_type(seg, layer, field) / .options(...) / .units(...)
 ```
 
-Field values: select = option key (label accepted), system-defined = {'value', 'unit'} (bare number gets the
-default unit), integer = whole number, text/others as is. Changed values are validated on save
-(ValueError naming the field); unchanged server values are never rejected.
+Field values (the same for generic `properties`, segments and dataset metadata):
+
+```
+text, textarea     str (as given)             number           number or '' (numeric: decimals/min/max)
+integer            whole number (as given)    checkbox         True / False only
+select             option key (label -> key)  select-multi     [keys] (labels -> keys, deduplicated)
+system-defined     {'value', 'unit'}          datetime         'DD/MM/YYYY HH:mm:ss' (datetime ok; None clears)
+datetime-range     {'timeStart', 'timeStop', 'duration': {'value', 'unit'}}  (partial dict: only those parts)
+ontology-select    term label (str)           formula-field    as given (never computed)
+text-formula       None / as given            dummy            None
+input-group        [part values in order]     upload           {'files': [...]} (no file upload)
+drag_element       {'value': {el_*}}          drag_sample/molecule  the el_* dict (as given)
+table              [TableRow] = {column heading: cell} + .row_id; the table ends up with exactly these rows;
+                   cells: text str, number, select key, select-multi [keys], system-defined {'value','unit'},
+                   formula result, drag el_* dict; unknown column -> ValueError
+```
+Changed values are validated on save (ValueError naming the field); unchanged server values are never
+rejected. Select options of saved records come from `properties_release`.
 
 ## 12. Analyses, Dataset, Attachments
 
@@ -419,10 +470,10 @@ Instance
 
 ```
 .delete(delete_subsamples=False) -> bool    # True when the record is really gone
-.comments() / .add_comment(content, section=None)
-.private_note() / .set_private_note(text) / .delete_private_note()
-.versions() -> list[Version]                # Version.changes, Version.revert(fields=None)
-.references() / .add_reference(doi=, url=, title=, isbn=, bibtex=, litype='citedOwn')
+.comments() / .add_comment(content, section=None)                  # not on generic elements (ValueError)
+.private_note() / .set_private_note(text) / .delete_private_note()  # not on generic elements (ValueError)
+.versions() -> list[Version]                # Version.changes, Version.revert(fields=None); not on generic elements
+.references() / .add_reference(doi=, url=, title=, isbn=, bibtex=, litype='citedOwn')   # not on generic elements
 .remove_reference(ref) / .set_reference_type(ref, litype)
 .save_analyses()                            # only the analyses (PUT /containers/container)
 .delete_analysis(analysis)                  # immediate, files gone
@@ -500,6 +551,7 @@ REPORT_TYPES: standard, spectrum, supporting_information, supporting_information
 ```
 klass (GenericElementKlass / GenericSegment / GenericDataset)
   .delete(confirm=<label>) / .revisions(limit=10) / .delete_revision(rev) / .download(path)
+  # re-upload: gm.upload_elements_json(path) / gm.upload_segment_json(path); datasets cannot be uploaded
 gm = instance.generic_manager()
   .hub_templates(kind) / .import_hub_template(identifier, kind) / .submit_to_hub(...)
   .published_templates(kind) / .active_element_names(generic_only=False)

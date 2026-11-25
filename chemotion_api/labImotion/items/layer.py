@@ -12,7 +12,10 @@ from chemotion_api.labImotion.utils import ChemotionSerializable, all_instances_
 
 
 class Layer(ChemotionSerializable, ConditionHandler):
-    """A layer (section) of a template.
+    """A layer (section) of a template: :attr:`key`, :attr:`label`, :attr:`cols`, :attr:`position`,
+    :attr:`color`, :attr:`style`, :attr:`wf`, :attr:`wf_position`, :attr:`timeRecord`, its :attr:`fields`
+    and its restrictions (:meth:`add_condition`). New layers are made with
+    :meth:`chemotion_api.labImotion.items.genericproperties.GenericProperties.add_new_layer`.
 
     :meth:`to_dict` writes the modelled attributes over the layer as it was loaded, so keys this client
     does not model (``label_fields``, ``wf_info``, ``ai`` and the like) are saved unchanged.
@@ -22,6 +25,10 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @classmethod
     def generate_new_layer(cls, sr: StructureRegistry, key: str, label: str):
+        """A new, empty layer as the designer creates it (color ``none``, style ``panel_generic_heading``,
+        one column, not a workflow layer). Use
+        :meth:`~chemotion_api.labImotion.items.genericproperties.GenericProperties.add_new_layer` to add one
+        to a template."""
         return cls(sr, {
             "key": key,
             "label": label,
@@ -117,6 +124,8 @@ class Layer(ChemotionSerializable, ConditionHandler):
         return new_field
 
     def update_fields_position(self):
+        """Renumbers the :attr:`~chemotion_api.labImotion.items.fields.base.BaseField.position` of the
+        fields 1, 2, ... in list order."""
         i = 1
         for f in self.fields:
             f.position = i
@@ -124,6 +133,11 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
 
     def validate(self, json_data: dict = None):
+        """Checks the layer (as loaded, or ``json_data``) against the layer schema. Runs when a layer is
+        loaded.
+
+        :raises jsonschema.ValidationError: if the layer does not fit the schema
+        """
         if json_data is None:
             json_data = self._json_data
         validate_generic_layer(json_data)
@@ -147,6 +161,8 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def fields(self) -> list[BaseField]:
+        """The fields of the layer, in order. Add fields with :meth:`add_field`; setting it takes a list
+        of fields or field dicts."""
         return self._fields
 
     @fields.setter
@@ -172,6 +188,9 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def wf(self) -> bool:
+        """Whether the layer is a workflow layer. New elements do not get workflow layers; they are
+        added by the workflow (:meth:`chemotion_api.elements.generic_element.GenericElement.wf_next`).
+        The workflow graph itself (``flowObject``) cannot be edited with the client."""
         return self._wf
 
     @wf.setter
@@ -183,6 +202,8 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def key(self) -> str:
+        """The key of the layer, unique in the template (``add_new_layer`` generates it from the
+        label). Elements store their values under it."""
         return self._key
 
     @key.setter
@@ -194,6 +215,11 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def style(self) -> str:
+        """The heading style: ``'panel_generic_heading'`` plus an optional suffix of ``b`` (bold), ``u``
+        (underlined) and ``i`` (italic), each at most once, e.g. ``'panel_generic_heading_bu'``.
+
+        :raises TypeError: for any other value
+        """
         return self._style
 
     @style.setter
@@ -206,6 +232,7 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def label(self) -> str:
+        """The heading shown in the element form. Elements address their layers by it."""
         return self._label
 
     @label.setter
@@ -217,6 +244,8 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def color(self) -> str:
+        """The heading color, a :class:`~chemotion_api.labImotion.items.options.LayerColor` (set it to the
+        enum or its value, e.g. ``'primary'``); ``''`` if the loaded layer has none."""
         return self._color
 
     @color.setter
@@ -230,6 +259,7 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def cols(self) -> int:
+        """The number of columns the fields are arranged in (an integer > 0)."""
         return self._cols
 
     @cols.setter
@@ -241,6 +271,7 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def wf_position(self) -> int:
+        """The position of the layer within its workflow (an integer >= 0; 0 for a new layer)."""
         return self._wf_position
 
     @wf_position.setter
@@ -252,6 +283,8 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @property
     def position(self) -> int:
+        """The position of the layer in the template (an integer >= 0). ``add_new_layer`` renumbers the
+        layers that are not workflow layers 10, 20, 30, ..."""
         return self._position
 
     @position.setter

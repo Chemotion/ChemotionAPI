@@ -3,6 +3,82 @@
 The version scheme tracks the server: `401.x.y` ↔ ELN 4.0.x (from 4.0.1; 401.1.2 is tested
 against 4.0.2), `312.x.y` ↔ ELN 3.1.2, `211.x.y` ↔ ELN 2.1.1.
 
+## Unreleased — generic elements: lossless templates, every field type
+
+LabIMotion templates and the values of generic elements, segments and datasets now follow what the
+web designer and the element form of LabIMotion 2.3.4 (chem-generic-ui 2.3.2, ELN 4.0.2) store. New
+documentation: docs/LabIMotionTemplates.rst and docs/GenericFieldValues.rst.
+
+### Behaviour changes callers must know
+
+- **`layer.add_field(FieldType.INTEGER, ...)` creates a `number` field** with 0 decimal places and
+  emits a `DeprecationWarning`; use `FieldType.NUMBER`. The designer offers only "Number" and turns
+  every `integer` field into `number` on save. Loaded `integer` fields stay `IntegerField` and save
+  unchanged.
+- **Table cells read in their field's shape:** number, select key, list of keys (select-multi),
+  `{'value', 'unit'}` (system-defined), formula result, the dropped `el_*` dict. Before, cells other
+  than text were the raw stored dicts (`{'value': ...}`, `{'value', 'value_system'}`); writing that
+  shape still works. Rows are `TableRow` objects (a `dict` subclass with `row_id`), and a table ends up
+  with exactly the rows given.
+- **Field and layer schemas accept unknown keys** (`additionalProperties: true`, like chem-generic-ui's
+  own schemas); known keys are still type-checked. The klass-level schema stays closed.
+- **Checkbox restrictions are stored as booleans** (`True`/`False`), as the designer stores them, no
+  longer as `'true'`/`'false'`.
+- **`DatetimeField.readonly` defaults to `None`** (was `False`); `readonly` is now an attribute of every
+  field, and `None` leaves the key out.
+- **A new drag column has `value = ''`** (was `';'`). Loaded drag columns keep their value.
+- Values are checked where they were stored as given before: checkbox values must be `bool`, number
+  values must fit the field's `numeric`, select-multi values must be options. An unknown table column
+  name raises `ValueError` (was `KeyError`).
+
+### Fixed: templates (#40)
+
+- Saving a template no longer drops attributes the client does not model: fields, sub-fields, table
+  columns and layers write their attributes over the JSON they were loaded from. `placeholder`,
+  `description`, `hasOwnRow`, `readonly`, the joined fields of a text-formula, preset values,
+  `option_layers` on non-select fields and unknown keys survive. Templates with `number` fields (every
+  template the designer saved) could not be loaded at all; they load now.
+- New attributes: `description`, `hasOwnRow` and `readonly` on every field, `placeholder` on text,
+  integer and number fields, `TextFormulaField.add_text_sub_field()`, a working `Layer.timeRecord`
+  setter (it did nothing and saved `''`).
+- Restrictions: conditions on a new layer are sent; a select value can be given by key or label (the
+  label always failed); `add_condition(..., label=...)` replaces the hard-coded label `"TEST"`;
+  `cond_fields = None` (or `[]`) clears them instead of raising; ontology-select fields can be a source.
+- Input-group number parts accept negative numbers and exponents.
+- New field types `FieldType.NUMBER` (`numeric`, `set_numeric()`) and `FieldType.ONTOLOGY_SELECT`
+  (`ontology_term`); formulas may use number fields.
+- New table column types `SubTableFieldType.NUMBER`, `SELECT_MULTI` and `FORMULA_FIELD`
+  (`TSFormulaField.add_ref()`). Unknown column and sub-field types load as `OpaqueSubField` and are
+  kept; such a table was not editable before.
+- `properties.layers = [...]` replaces the layers (it appended); the "System user list" option set
+  `-su03-` is accepted; `StructureRegistry.get_structure()` tolerates unknown field types; a layer's
+  fields no longer get an empty layer key when `fields` precedes `key` in the JSON.
+
+### Fixed: field values (#41)
+
+- **select-multi** reads and writes the list of option keys (in `sub_fields`, as the form stores them;
+  it read `None` and wrote into `value`).
+- **datetime-range** reads and writes `{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}` in its
+  four sub-fields (it read `None`).
+- **Tables:** removing rows no longer leaves old rows behind or shifts values; rows keep their ids;
+  cells are converted and checked per column type; a row without a cell for a column no longer raises
+  `KeyError`.
+- **number** values are checked against `numeric` and stored as numbers; **checkbox** values must be
+  `bool`; **datetime** takes `datetime` objects and `None` clears it; **ontology-select** takes the term
+  label; input-group number parts are checked, too many values raise `ValueError` (was `IndexError`).
+- Dummy and text-formula fields no longer get `value: null` on every save; a layer or field label of
+  `None` no longer crashes the reader.
+- Select values written to a saved element, segment or dataset were refused ("not an option"), because
+  the ELN drops `select_options` from saved records; options now come from `properties_release`.
+- `SegmentField.options()` works for select-multi fields; `SegmentField.clean_value()` covers
+  select-multi, number, checkbox, datetime and ontology-select.
+
+### Docs
+
+- Docstrings for the template classes (fields, sub-fields, table columns, layers, restrictions,
+  `GenericProperties`, the enums and the klass classes).
+- MISSING_FEATURES.md no longer claims that dataset templates can be created, updated and uploaded.
+
 ## 403.0.1-rc.1 — `chemotion/main` rebuilt on the 401.1.2 line
 
 `chemotion/main`, the line for unreleased ELN `main`, now carries everything on `main` up to

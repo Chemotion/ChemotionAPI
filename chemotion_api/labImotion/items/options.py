@@ -1,21 +1,28 @@
 from enum import Enum
 
 class ListableEnum(Enum):
+    """An enum with :meth:`list`."""
     @classmethod
     def list(cls):
+        """The values of all members."""
         return list(map(lambda c: c.value, cls))
 
 class SaveActionType(Enum):
+    """What ``klass.save()`` does with the template: ``DRAFT`` stores it, ``MINOR`` releases it as the
+    next minor version (e.g. 1.0 -> 1.1), ``MAJOR`` as the next major version (e.g. 0.1 -> 1.0). New
+    elements always use the latest release."""
     DRAFT = "draft"
     MINOR = "minor"
     MAJOR = "major"
 
 class ElementType(ListableEnum):
+    """The three kinds of LabIMotion klass: element, segment and dataset."""
     SEGMENT = 'SegmentKlass'
     ELEMENT = 'ElementKlass'
     DATASET = 'DatasetKlass'
 
 class SubFieldType(ListableEnum):
+    """The part types of an input-group field (``InputGroupField.add_subfield``)."""
     NUMBER = 'number'
     LABEL = 'label'
     TEXT = 'text'
@@ -36,6 +43,13 @@ class SubTableFieldType(ListableEnum):
 
 
 class FieldType(ListableEnum):
+    """The field types of a template layer, as stored in a field's ``type``.
+
+    :meth:`~chemotion_api.labImotion.items.layer.Layer.add_field` creates every member. ``DATE``,
+    ``WF_NEXT``, ``SYS_REACTION``, ``DRAG`` and ``DRAG_REACTION`` get a field without type-specific
+    settings (:class:`~chemotion_api.labImotion.items.fields.fields.OpaqueField`); loaded fields of these
+    types keep all their keys. ``INTEGER`` creates a ``number`` field (see ``add_field``).
+    """
     DUMMY = 'dummy'
     CHECKBOX = "checkbox"
     DATETIME = "datetime"
@@ -73,12 +87,16 @@ class FieldType(ListableEnum):
 
 
 class ConditionOperator(ListableEnum):
+    """How the restrictions of a field or layer are combined: shown if all (``MATCH_ALL``), at least one
+    (``MATCH_ONE``, the default) or none (``MATCH_NONE``) of them match."""
     MATCH_ALL = 9
     MATCH_ONE = 1
     MATCH_NONE = 0
 
 
 class FieldUnit(ListableEnum):
+    """The unit types of system-defined fields, sub-fields and columns (their ``option_layers``). The
+    units of each type are in :data:`UNITS`; the first one is the default."""
     ACCELERATION = "acceleration"
     AGITATION = "agitation"
     AMOUNT_ENZYME = "amount_enzyme"
@@ -147,6 +165,8 @@ class FieldUnit(ListableEnum):
 
 
 class LayerColor(ListableEnum):
+    """The heading colors of a layer, named after the designer's color: ``BLUE`` is stored as
+    ``'primary'``, ``GREEN`` as ``'success'`` and so on."""
     NONE = "none"
     BLUE = "primary"
     BLUE_LIGHT = "info"

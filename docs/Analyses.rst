@@ -19,6 +19,11 @@ New analyses and datasets are created and uploaded when the element is saved.
 Note that the datasets of an analysis are an attribute (``analysis.datasets``), not a dict key, and that a
 dataset's dict holds only its metadata set; its name is ``dataset.name``.
 
+The metadata set is the form of the LabIMotion dataset klass the server chose for the analysis kind:
+``dataset[layer][field]``. Its values follow the same rules as generic element and segment fields (see
+:doc:`GenericFieldValues`) and are saved with the element or with ``element.save_analyses()``. The client
+cannot attach a dataset klass to a dataset that has none.
+
 .. code-block:: python
 
     for analysis in sample.analyses:

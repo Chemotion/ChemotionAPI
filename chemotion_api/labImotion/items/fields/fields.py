@@ -32,6 +32,8 @@ class Placeholder:
 
 
 class DummyField(BaseField):
+    """An empty spacer ("Dummy" in the designer). It holds no value; :attr:`hasOwnRow` is not
+    available."""
     field_type = FieldType.DUMMY
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -40,6 +42,8 @@ class DummyField(BaseField):
 
 
 class CheckboxField(BaseField):
+    """A checkbox. Its value in an element is ``True`` or ``False``. It can be the source of a
+    restriction (:meth:`add_condition` with a bool)."""
     field_type = FieldType.CHECKBOX
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -48,7 +52,8 @@ class CheckboxField(BaseField):
 
 
 class DatetimeField(BaseField):
-    """A date and time. :attr:`readonly` is saved with the template."""
+    """A date and time. Its value in an element is a ``DD/MM/YYYY HH:mm:ss`` string. :attr:`readonly`
+    is saved with the template (None, the default, leaves the key out)."""
     field_type = FieldType.DATETIME
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -57,6 +62,9 @@ class DatetimeField(BaseField):
 
 
 class DatetimeRangeField(BaseField):
+    """A start, a stop and a duration. The template has no type-specific settings; the element form
+    creates the four parts (``timeStart``, ``timeStop``, ``durationCalc``, ``duration``) in the element's
+    ``sub_fields``."""
     field_type = FieldType.DATETIME_RANGE
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -65,6 +73,8 @@ class DatetimeRangeField(BaseField):
 
 
 class DragElementField(BaseField):
+    """A drop target for an element ("Link Element"). No type-specific settings are modelled; keys the
+    designer adds are kept on save."""
     field_type = FieldType.DRAG_ELEMENT
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -73,6 +83,8 @@ class DragElementField(BaseField):
 
 
 class DragMoleculeField(BaseField):
+    """A drop target for a molecule. No type-specific settings are modelled; keys the designer adds
+    are kept on save."""
     field_type = FieldType.DRAG_MOLECULE
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -81,6 +93,8 @@ class DragMoleculeField(BaseField):
 
 
 class DragSampleField(BaseField):
+    """A drop target for a sample. No type-specific settings are modelled; keys the designer adds are
+    kept on save."""
     field_type = FieldType.DRAG_SAMPLE
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -89,6 +103,15 @@ class DragSampleField(BaseField):
 
 
 class FormulaFieldField(BaseField):
+    """A value computed from number, integer and system-defined fields of the same layer ("Formula").
+
+    The element form computes the result; the client stores a value written to it as given and never
+    computes it.
+
+    >>> f = layer.add_field(FieldType.FORMULA_FIELD, 'Total')
+    >>> f.formula = '(mass_a + mass_b) * 2'
+    >>> f.decimal = 3
+    """
     field_type = FieldType.FORMULA_FIELD
     required_fields = ["formula", "decimal", "canAdjust"]
     #: The field types a formula can use (chem-generic-ui ``WZ``).
@@ -103,6 +126,8 @@ class FormulaFieldField(BaseField):
 
     @property
     def canAdjust(self) -> bool:
+        """Whether the user may overwrite the computed value. A new field gets ``True`` (the designer
+        leaves it unset, which means False)."""
         return self._can_adjust
 
     @canAdjust.setter
@@ -113,6 +138,8 @@ class FormulaFieldField(BaseField):
 
     @property
     def decimal(self) -> str:
+        """The number of decimal places of the result, as a string of digits (an int is accepted when
+        setting). A new field gets ``'2'``."""
         return str(self._decimal)
 
     @decimal.setter
@@ -125,6 +152,8 @@ class FormulaFieldField(BaseField):
 
     @property
     def formula(self) -> str:
+        """The expression: numbers, ``+ - * /``, parentheses and the keys of integer, number and
+        system-defined fields of the same layer. Setting another name raises ``ValueError``."""
         return self._formula
 
     @formula.setter
@@ -147,6 +176,14 @@ class FormulaFieldField(BaseField):
 
 
 class InputGroupField(BaseField):
+    """Several inputs on one line ("Input Group"). The parts are :attr:`sub_fields`, added with
+    :meth:`add_subfield`; in an element the value is a list of the parts' values in this order.
+
+    >>> group = layer.add_field(FieldType.INPUT_GROUP, 'Optical density')
+    >>> group.add_subfield(SubFieldType.LABEL).value = 'OD'
+    >>> group.add_subfield(SubFieldType.NUMBER)
+    >>> group.add_subfield(SubFieldType.SYSTEM_DEFINED).option_layers = FieldUnit.LENGTH
+    """
     field_type = FieldType.INPUT_GROUP
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -156,6 +193,9 @@ class InputGroupField(BaseField):
 
     @property
     def sub_fields(self) -> list:
+        """The parts of the group (:class:`~chemotion_api.labImotion.items.fields.sub_fields.SubBaseField`
+        objects). It can be set to a list of sub-fields or of their dicts; parts of an unknown type are kept
+        as :class:`~chemotion_api.labImotion.items.fields.sub_fields.OpaqueSubField`."""
         return self._sub_fields
 
     @sub_fields.setter
@@ -177,6 +217,13 @@ class InputGroupField(BaseField):
 
 
     def add_subfield(self, sf_type: SubFieldType) -> SubNumberField | SubTextField | SubSystemDefinedField | LabelField:
+        """
+        Appends a part to the group.
+
+        :param sf_type: ``SubFieldType.LABEL`` (fixed text, set its ``value``), ``NUMBER``, ``TEXT`` or
+            ``SYSTEM_DEFINED`` (set its ``option_layers`` and ``value_system``)
+        :return: the new part
+        """
         self.sub_fields.append(self._factory_subfield(sf_type))
         return self.sub_fields[-1]
 
@@ -258,6 +305,8 @@ class OntologySelectField(BaseField):
 
 
 class SelectField(BaseField, Select):
+    """A select list. :attr:`option_layers` names its option set in the template's ``select_options``
+    (``add_field(..., options=[...])`` creates one). In an element the value is the option key."""
     field_type = FieldType.SELECT
     required_fields = ['option_layers']
 
@@ -308,6 +357,14 @@ class OpaqueField(BaseField):
 
 
 class SystemDefinedField(BaseField, SystemDefined):
+    """A number with a unit ("System-Defined"). :attr:`option_layers` is the unit type
+    (:class:`~chemotion_api.labImotion.items.options.FieldUnit`), :attr:`value_system` the default unit.
+    In an element the value is ``{'value': ..., 'unit': ...}``.
+
+    >>> temp = layer.add_field(FieldType.SYSTEM_DEFINED, 'Temperature')
+    >>> temp.option_layers = FieldUnit.TEMPERATURE   # the default unit becomes 'C'
+    >>> temp.value_system = 'K'
+    """
     field_type = FieldType.SYSTEM_DEFINED
     required_fields = ['option_layers', 'value_system']
 
@@ -318,6 +375,13 @@ class SystemDefinedField(BaseField, SystemDefined):
 
 
 class TableField(BaseField):
+    """A table. Its columns are :attr:`sub_fields`, added with :meth:`add_subfield`; in an element the
+    value is a list of :class:`chemotion_api.utils.TableRow`. :attr:`hasOwnRow` is not available.
+
+    >>> table = layer.add_field(FieldType.TABLE, 'Measurements')
+    >>> table.add_subfield(SubTableFieldType.TEXT, 'Probe')
+    >>> table.add_subfield(SubTableFieldType.NUMBER, 'Mass').set_numeric(decimals=2, min=0)
+    """
     field_type = FieldType.TABLE
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -327,6 +391,10 @@ class TableField(BaseField):
 
     @property
     def sub_fields(self) -> list:
+        """The columns (:class:`~chemotion_api.labImotion.items.fields.table_sub_fields.TableSubBaseField`
+        objects), in display order. It can be set to a list of columns or of their dicts; columns of a type
+        this client does not model (e.g. LabIMotion 2.4's ``drag_element``) are kept as
+        :class:`~chemotion_api.labImotion.items.fields.sub_fields.OpaqueSubField`."""
         return self._sub_fields
 
     @sub_fields.setter
@@ -352,8 +420,11 @@ class TableField(BaseField):
         """
         Adds a column, set up as the designer sets up a new column of that type.
 
-        :param sf_type: the column type
-        :param col_name: the column heading
+        :param sf_type: the column type. A new number column gets ``numeric = {decimals: 0, min: '', max:
+            ''}``; select and select-multi columns the first option set of the template; system-defined
+            columns ``acceleration`` and its first unit; formula columns ``formula = ''``, ``decimal = 5``,
+            ``refs = []``; drag columns ``value = ''`` (no extra display columns)
+        :param col_name: the column heading. Rows of an element address their cells by it
         :return: the new column
         """
         self.sub_fields.append(self._factory_subfield(sf_type, {'col_name': col_name}))
@@ -433,6 +504,7 @@ class TextField(BaseField, Placeholder):
 
 
 class TextareaField(BaseField):
+    """A multi-line text. In an element the value is a string."""
     field_type = FieldType.TEXTAREA
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
@@ -441,6 +513,8 @@ class TextareaField(BaseField):
 
 
 class UploadField(BaseField):
+    """A file upload. No type-specific settings are modelled. In an element the value is
+    ``{'files': [...]}``; the client cannot upload files into it."""
     field_type = FieldType.UPLOAD
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):

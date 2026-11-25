@@ -21,7 +21,15 @@ def _drop_if_cleared(data: dict, key: str) -> None:
 
 
 class BaseField(ChemotionSerializable, ConditionHandler):
-    """A field of a template layer.
+    """A field of a template layer. Each field type has its own subclass (see
+    :mod:`chemotion_api.labImotion.items.fields.fields`); new fields are made with
+    :meth:`chemotion_api.labImotion.items.layer.Layer.add_field`.
+
+    Attributes common to all types: :attr:`field` (the key), :attr:`label`, :attr:`position`,
+    :attr:`required`, :attr:`default`, :attr:`cols`, :attr:`ontology`, :attr:`description`,
+    :attr:`hasOwnRow` and :attr:`readonly`, and the restrictions of
+    :class:`~chemotion_api.labImotion.items.condition_handler.ConditionHandler` (:meth:`add_condition`,
+    :attr:`cond_fields`, :attr:`cond_operator`).
 
     :meth:`to_dict` writes the modelled attributes over the field as it was loaded, so keys this client
     does not model (set in the web designer, or added by a later LabIMotion) are saved unchanged.
@@ -83,6 +91,7 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def layer_key(self) -> str:
+        """The key of the layer the field belongs to (read only)."""
         return self._layer_key
 
     def to_dict(self) -> dict:
@@ -117,6 +126,8 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def cols(self) -> int:
+        """The ``cols`` setting of the field, or None if unset (then the key is not written). Values are
+        converted to ``int``."""
         return self._cols
 
     @cols.setter
@@ -149,6 +160,7 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def default(self):
+        """The ``default`` of the field (a string, ``''`` for none)."""
         return self._default
 
     @default.setter
@@ -159,6 +171,9 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def field(self) -> str | None:
+        """The key of the field ("Field Name" in the designer), unique in its layer. It can be set once
+        only; :meth:`~chemotion_api.labImotion.items.layer.Layer.add_field` generates it from the label if
+        none is given."""
         return self._field
 
     @field.setter
@@ -172,6 +187,7 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def label(self) -> str:
+        """The label shown in the element form ("Display Name"). Elements address their fields by it."""
         return self._label
 
     @label.setter
@@ -182,6 +198,8 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def position(self) -> int:
+        """The position of the field in its layer (1, 2, ...). ``add_field`` renumbers the fields of the
+        layer."""
         return self._position
 
     @position.setter
@@ -192,6 +210,8 @@ class BaseField(ChemotionSerializable, ConditionHandler):
 
     @property
     def required(self) -> bool:
+        """Whether the element form requires a value ("Required"). The client stores the flag for every
+        type; it does not check it when an element is saved."""
         return self._required
 
     @required.setter
