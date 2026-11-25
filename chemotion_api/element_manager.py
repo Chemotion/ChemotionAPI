@@ -136,7 +136,9 @@ class ElementManager:
             if not isinstance(klass_obj, dict):
                 raise ValueError(f'The server has no generic element type "{type_name}" '
                                  f'(it may have been deleted since the element types were loaded).')
-            if not isinstance(klass_obj.get('properties_release'), dict):
+            # A klass never released has `properties_release` null, or `{}` (the column default)
+            release = klass_obj.get('properties_release')
+            if not isinstance(release, dict) or not isinstance(release.get('layers'), dict):
                 raise ValueError(f'The generic element type "{type_name}" has no released template, '
                                  f'so no element can be created from it. Release the template first.')
             properties_release = copy.deepcopy(klass_obj['properties_release'])

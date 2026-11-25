@@ -116,6 +116,33 @@ def test_a_builtin_type_is_refused_with_its_accessor(monkeypatch, name, accessor
         pkg.Instance.get_generic_by_name(inst, name, 1)
 
 
+def test_a_generic_type_sharing_a_builtin_label_is_found_by_label(monkeypatch):
+    """Built-ins come first in `all_element_classes`; a generic type of the same label must still
+    be found instead of the built-in being refused."""
+    import chemotion_api as pkg
+
+    element = type('G', (), {'klass_name': 'screen_g'})()
+    inst = pkg.Instance.__new__(pkg.Instance)
+    inst._con = None
+    monkeypatch.setattr(pkg.Instance, 'all_element_classes', property(
+        lambda self: {'screen': {'name': 'screen', 'label': 'Screen', 'is_generic': False},
+                      'screen_g': {'name': 'screen_g', 'label': 'Screen', 'is_generic': True}}))
+    monkeypatch.setattr(pkg, 'ElementSet', type('ES', (), {'__init__': lambda s, *a: None,
+                                                          'load_element': lambda s, _id: element}))
+    assert pkg.Instance.get_generic_by_label(inst, 'Screen', 1) is element
+
+
+def test_a_label_only_a_builtin_type_has_is_refused(monkeypatch):
+    import chemotion_api as pkg
+
+    inst = pkg.Instance.__new__(pkg.Instance)
+    inst._con = None
+    monkeypatch.setattr(pkg.Instance, 'all_element_classes', property(
+        lambda self: {'sample': {'name': 'sample', 'label': 'Sample', 'is_generic': False}}))
+    with pytest.raises(ValueError, match=r'built-in element type.*Instance\.get_sample\(\)'):
+        pkg.Instance.get_generic_by_label(inst, 'Sample', 1)
+
+
 def test_a_mismatched_generic_type_is_refused(monkeypatch):
     """The #14 guard still fires once made defensive."""
     import chemotion_api as pkg

@@ -36,8 +36,10 @@ def test_build_new_names_a_missing_klass(body):
         _manager(200, body).build_new('try', 1)
 
 
-def test_build_new_names_a_template_without_a_release():
-    body = {'klass': {'id': 1, 'name': 'try', 'label': 'Tryout', 'properties_release': None}}
+@pytest.mark.parametrize('release', [None, {}])
+def test_build_new_names_a_template_without_a_release(release):
+    """Never released: null, or `{}` as the column default stores it."""
+    body = {'klass': {'id': 1, 'name': 'try', 'label': 'Tryout', 'properties_release': release}}
     with pytest.raises(ValueError, match='"try" has no released template'):
         _manager(200, body).build_new('try', 1)
 
