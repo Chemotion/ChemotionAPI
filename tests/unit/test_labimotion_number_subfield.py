@@ -34,7 +34,7 @@ def test_an_empty_value_clears_the_number(number):
     assert number.to_dict()['value'] == ''
 
 
-@pytest.mark.parametrize('value', ['...', '.', '1.2.3', '1-2', '1e', 'e3', '--1', 'abc', 'nan', 'inf', ' 1'])
+@pytest.mark.parametrize('value', ['...', '.', '1.2.3', '1-2', '1e', 'e3', '--1', 'abc', 'nan', 'inf', ' 1', '1\n'])
 def test_text_that_is_not_a_number_is_refused(number, value):
     with pytest.raises(ValueError):
         number.value = value

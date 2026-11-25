@@ -7,7 +7,7 @@ import pytest
 
 from chemotion_api.labImotion import GenericElementKlass
 from chemotion_api.labImotion.items.layer import Layer
-from chemotion_api.labImotion.items.options import FieldType
+from chemotion_api.labImotion.items.options import ConditionOperator, FieldType
 
 FIXTURE = os.path.join(os.path.dirname(__file__), '..', 'fixtures', 'GenericElement.json')
 
@@ -64,3 +64,31 @@ def test_the_loaded_conditions_of_a_layer_can_be_cleared(klass):
 def test_a_loaded_empty_condition_list_is_kept(klass):
     saved = klass.properties.get_layer_by_key('aaa').to_dict()
     assert (saved['cond_fields'], saved['cond_operator']) == ([], 1)
+
+
+def test_conditions_added_again_after_clearing_are_saved(klass):
+    """Clearing dropped the keys from the layer's data, and `to_dict` only wrote keys it had."""
+    select, _ = _select_and_target(klass)
+    layer = klass.properties.get_layer_by_key('con')
+    layer.cond_fields = None
+    layer.to_dict()
+    layer.add_condition(select, 'lb_broth')
+    saved = layer.to_dict()
+    assert [c['value'] for c in saved['cond_fields']] == ['lb_broth']
+    assert saved['cond_operator'] == 1
+
+
+def test_conditions_of_a_new_layer_are_saved(klass):
+    select, _ = _select_and_target(klass)
+    layer = klass.properties.add_new_layer('Restricted')
+    layer.add_condition(select, 'tb_broth')
+    saved = layer.to_dict()
+    assert [c['value'] for c in saved['cond_fields']] == ['tb_broth']
+    Layer(layer._sr, saved)  # validates
+
+
+def test_the_operator_falls_back_to_match_one_when_set_to_none(klass):
+    select, target = _select_and_target(klass)
+    target.add_condition(select, 'lb_broth')
+    target.cond_operator = None
+    assert target.cond_operator == ConditionOperator.MATCH_ONE

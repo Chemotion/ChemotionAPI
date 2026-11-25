@@ -71,11 +71,9 @@ class ConditionHandler:
     @cond_operator.setter
     def cond_operator(self, value: ConditionOperator | int | None):
         if value is None:
-            if self.cond_fields is None:
-                self._cond_operator = None
-                return
-            else:
-                self._cond_operator = ConditionOperator.MATCH_ONE
+            # With conditions set, None means the default operator
+            self._cond_operator = None if self.cond_fields is None else ConditionOperator.MATCH_ONE
+            return
         if isinstance(value, int):
             value = ConditionOperator(value)
         if not isinstance(value, ConditionOperator):
