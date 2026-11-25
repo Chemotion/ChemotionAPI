@@ -33,7 +33,7 @@ from chemotion_api.elements import ElementSet, Wellplate, Sample, Reaction, Gene
     SbmmSample, CellLine, DeviceDescription, \
     AbstractElement
 from chemotion_api.elements.sample import MoleculeManager
-from chemotion_api.connection import Connection, request_error
+from chemotion_api.connection import Connection, request_error, _origin
 from chemotion_api.elements import literature, research_plan
 from chemotion_api import account, chemicals, compute, reports, scifinder, vessels
 from chemotion_api import sample_tasks as _sample_tasks
@@ -856,22 +856,26 @@ class Instance:
         :param id: The Database ID of the desired Element
         :return: a GenericElement object
 
-        :raises ValueError: if no generic element type has this name, or if the element with this
-            id is of a *different* generic type
+        :raises ValueError: if no generic element type has this name, if the name is that of a
+            built-in type (``sample``, ``reaction``, …; use its own accessor, e.g.
+            :meth:`get_sample`), or if the element with this id is of a *different* generic type
         :raises RequestException: (requests.exceptions.RequestException) if the information cannot be fetched. Make sure that your connection is active and you are logged in.
         """
         elem = self.all_element_classes.get(name)
         if elem is None:
             raise ValueError(f'Could not find a generic element under the name: "{name}"')
+        # Built-in types (`sample`, `reaction`, …) are in `all_element_classes` too, but they are
+        # not GenericElements, so this method must not hand them out.
+        if not elem.get('is_generic', True):
+            accessor = {'sequence_based_macromolecule_sample': 'get_sbmm_sample'}.get(name, f'get_{name}')
+            hint = f'use Instance.{accessor}() instead' if hasattr(Instance, accessor) else 'it cannot be loaded here'
+            raise ValueError(f'"{name}" is a built-in element type, not a generic one; {hint}.')
         e = ElementSet(self._con, elem)
         element = typing.cast(GenericElement, e.load_element(id))
         # The server resolves a generic element by id alone — the type in the request path does
         # not scope the lookup. So asking for `try` id 3 happily returns a `wrk` element, and
         # without this check the caller gets an object of the wrong type with no indication at
         # all (reported as issue #14). Confirmed still true on ELN v4.0.1.
-        # Built-in types (`sample`, `reaction`, …) are in `all_element_classes` too, and they are
-        # not GenericElements — they have no `klass_name`. Reading it unconditionally would turn
-        # a working call into an AttributeError.
         actual = getattr(element, 'klass_name', None)
         if actual is not None and actual != name:
             raise ValueError(
@@ -891,13 +895,18 @@ class Instance:
         :param id: The Database ID of the desired Element
         :return: a GenericElement object
 
-        :raises ValueError: if no generic element type has this label
+        :raises ValueError: if no generic element type has this label, or if the label is that of
+            a built-in type (see :meth:`get_generic_by_name`)
         :raises RequestException: (requests.exceptions.RequestException) if the information cannot be fetched. Make sure that your connection is active and you are logged in.
         """
-        for (elem_name, elem) in self.all_element_classes.items():
-            if elem['label'] == label:
-                return self.get_generic_by_name(elem_name, id)
-        raise ValueError(f'Could not find a generic element with the label: "{label}"')
+        classes = self.all_element_classes
+        matches = [elem_name for (elem_name, elem) in classes.items() if elem.get('label') == label]
+        if not matches:
+            raise ValueError(f'Could not find a generic element with the label: "{label}"')
+        # A generic type may share its label with a built-in one, which the list holds first:
+        # take the generic type then. A label only a built-in type has is refused by name.
+        elem_name = next((x for x in matches if classes[x].get('is_generic', True)), matches[0])
+        return self.get_generic_by_name(elem_name, id)
 
     def get_json_ld_id(self, id: str) -> AbstractElement:
         """
@@ -906,10 +915,13 @@ class Instance:
         :param id: JSON-LD ID string starting with the host url of the element
         :return: the requested element
 
-        :raises ValueError: if the information cannot be fetched. Make sure that your connection is active and the ID is correct.
+        :raises ValueError: if the id belongs to another server (scheme, host and port must match
+            this instance's) or the information cannot be fetched. Make sure that your connection is active and the ID is correct.
         """
         o = urlparse(id)
-        if not self._con.host_url.startswith(f'{o.scheme}://{o.hostname}'):
+        # Compare the whole origin: a prefix check accepted `https://eln.example.org` for an
+        # instance at `https://eln.example.org.evil.com` and ignored the port.
+        if _origin(o) != _origin(urlparse(self._con.host_url)):
             raise ValueError('Host does not fit!')
         path_array = o.path.split('/')
         elem = self.all_element_classes.get(path_array[-2][:-1])
