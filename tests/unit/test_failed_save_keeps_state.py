@@ -53,6 +53,20 @@ def test_a_successful_reaction_save_rebuilds_the_variations(monkeypatch):
     assert reaction._variations is None
 
 
+def test_saved_variations_stay_after_a_successful_save(monkeypatch):
+    """A PUT does not refresh `json_data`: the rebuild read the variations as loaded, and the next
+    save (variations untouched) sent those back over the saved ones."""
+    sent = []
+    monkeypatch.setattr(AbstractElement, 'save',
+                        lambda self, load_after_save=False: sent.append(self._clean_properties_data()['variations']))
+    reaction = _edited_reaction()
+    reaction.save()
+    assert [v.notes for v in reaction.variations] == ['draft']
+    reaction._variations = None  # the next save does not touch the variations
+    reaction.save()
+    assert sent[1][0]['metadata']['notes'] == 'draft'
+
+
 BODY = [{'id': 'b1', 'type': 'richtext', 'value': {'ops': [{'insert': 'old\n'}]}}]
 
 
