@@ -71,6 +71,15 @@ def test_get_next_shot_label_works_on_an_instance(monkeypatch):
     assert em.get_next_shot_label('sample') == 'API-sample-1'
 
 
+def test_get_next_shot_label_keeps_the_old_explicit_manager_calls(monkeypatch):
+    """The old staticmethod took the manager as its first argument, through the class or an instance."""
+    from chemotion_api.element_manager import ElementManager
+    em = ElementManager(SimpleNamespace())
+    monkeypatch.setattr(em, '_get_short_label', lambda type_name: f'API-{type_name}-1')
+    assert ElementManager.get_next_shot_label(em, 'sample', None) == 'API-sample-1'
+    assert em.get_next_shot_label(em, 'sample', None) == 'API-sample-1'
+
+
 # F14: temperature conversion
 
 def test_a_temperature_below_absolute_zero_is_not_turned_positive():
