@@ -183,10 +183,16 @@ def _read_datetime_range(field: dict) -> dict:
     """
     parts = {x.get('col_name'): x for x in field.get('sub_fields') or [] if isinstance(x, dict)}
     duration = parts.get('duration', {})
-    return {'timeStart': parts.get('timeStart', {}).get('value', ''),
-            'timeStop': parts.get('timeStop', {}).get('value', ''),
-            'duration': {'value': duration.get('value', ''),
-                         'unit': duration.get('value_system', _DURATION_DEFAULT_UNIT)}}
+
+    def text(part: dict) -> Any:
+        # A null reads as '', as writing it back stores it: else an untouched field changed on save
+        value = part.get('value')
+        return '' if value is None else value
+
+    return {'timeStart': text(parts.get('timeStart', {})),
+            'timeStop': text(parts.get('timeStop', {})),
+            'duration': {'value': text(duration),
+                         'unit': duration.get('value_system') or _DURATION_DEFAULT_UNIT}}
 
 
 def parse_generic_field(field: dict) -> dict[str, any]:

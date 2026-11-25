@@ -251,3 +251,30 @@ def test_a_table_row_without_a_cell_saves():
         values['L']['Table'][0]['B'] = 'y'
     assert _round_trip(record, change)['properties']['layers']['l']['fields'][0]['sub_values'] == \
         [{'id': 'r1', 'c1': 'x', 'c2': 'y'}]
+
+
+# --- review fixes -----------------------------------------------------------------------------------
+
+def test_an_untouched_datetime_range_with_null_parts_is_left_as_stored():
+    parts = _range_parts()
+    for part in parts:
+        part['value'] = None
+    parts[3]['value_system'] = None
+    parts = parts[:2] + parts[3:]  # no durationCalc: a save must not add it either
+    record = _record(parts=copy.deepcopy(parts))
+    values = parse_generic_object_json(record)['values']
+    assert values['L']['Range'] == {'timeStart': '', 'timeStop': '', 'duration': {'value': '', 'unit': 'd'}}
+    assert _fields(_round_trip(record))['range']['sub_fields'] == parts
+
+
+def test_a_generic_segment_labelled_properties_keeps_the_builtin_names():
+    """`add_to_dict` no longer overwrites None, and every segment not added yet is a None placeholder."""
+    from chemotion_api.elements.sample import Sample
+    from test_sample_properties import SESSION, _sample_json
+
+    segments = SimpleNamespace(all_classes=[
+        {'id': 9, 'label': label, 'element_klass': {'name': 'sample'}} for label in ('Properties', 'Analyses')])
+    sample = Sample(segments, SESSION, json_data=_sample_json(1))
+    keys = dict.keys(sample._segments)
+    assert 'Properties.1' not in keys and 'Analyses.1' not in keys
+    assert dict.__getitem__(sample._segments, 'Analyses') is sample._analyses

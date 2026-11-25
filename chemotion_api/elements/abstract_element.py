@@ -996,8 +996,15 @@ class AbstractElement:
         # page cost 51 requests, and a transient failure left `_load_failed` on an element that
         # had merely been listed. Loading stays lazy: the first real property read triggers it.
         # The same holds for the segments and analyses getters, which load too.
-        add_to_dict(self._segments, 'Properties', PropertyDict(self.on_properties_change, self._properties_data))
-        add_to_dict(self._segments, 'Analyses', self._analyses)
+        for name, value in (('Properties', PropertyDict(self.on_properties_change, self._properties_data)),
+                            ('Analyses', self._analyses)):
+            # A generic segment of this label the element does not have yet holds a None
+            # placeholder: the built-in entry keeps its documented name over it, as it did before
+            # `add_to_dict` stopped overwriting None values.
+            if dict.get(self._segments, name, False) is None:
+                dict.__setitem__(self._segments, name, value)
+            else:
+                add_to_dict(self._segments, name, value)
 
     def _on_add_segment(self, key: str, segment_data: dict) -> dict:
         temp_segment = parse_generic_object_json(segment_data)
