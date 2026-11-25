@@ -6,6 +6,7 @@ Defines :class:`Reaction` (a Chemotion reaction, extending
 :class:`Temperature` (a temperature-time profile). Reactions persist the product yield through an
 ``equivalent`` cache.
 """
+import copy
 import logging
 import re
 from enum import Enum
@@ -85,15 +86,49 @@ class MaterialList(TypedList):
         super().__init__(Sample, *args)
         self._reaction = reaction
         self._mat_type = mat_type
-        # The entry an item assignment replaces: it is leaving the list, so it is no duplicate.
-        self._replacing: Sample | None = None
+        # The entries an item or slice assignment replaces: they are leaving the list, so they are
+        # no duplicates.
+        self._replacing: tuple[Sample, ...] = ()
 
     def __setitem__(self, index, element):
-        self._replacing = self[index] if isinstance(index, int) else None
+        if isinstance(index, slice):
+            self._set_slice(index, element)
+            return
+        position = range(len(self))[index]  # normalised; IndexError as list assignment raises it
+        self._replacing = (self[index],)
         try:
             super().__setitem__(index, element)
         finally:
-            self._replacing = None
+            self._replacing = ()
+        self._set_position(self[position], position)
+
+    def _set_slice(self, index: slice, items) -> None:
+        """Slice assignment: every item is checked, bound and prepared as by :meth:`append`, the
+        items must not repeat each other, and each gets the position it ends up at."""
+        items = list(items)
+        for item in items:
+            self._check_element(item)
+        replaced = list.__getitem__(self, index)
+        if index.step not in (None, 1) and len(items) != len(replaced):
+            raise ValueError(f'attempt to assign sequence of size {len(items)} '
+                             f'to extended slice of size {len(replaced)}')
+        self._replacing = tuple(replaced)
+        try:
+            prepared: list[Sample] = []
+            for item in items:
+                element = self._prepare_element(item)
+                if any(x is element or (element.id is not None and x.id == element.id) for x in prepared):
+                    label = element.id if element.id is not None else '(unsaved)'
+                    raise ValueError(f'Sample {label} is given twice; the ELN keeps one link per sample.')
+                prepared.append(element)
+        finally:
+            self._replacing = ()
+        list.__setitem__(self, index, prepared)
+        for element in prepared:
+            self.after_append(element)
+        for position, element in enumerate(self):
+            if any(element is x for x in prepared):
+                self._set_position(element, position)
 
     def _check_not_in_reaction(self, element: Sample) -> None:
         """Refuse a sample this reaction already holds, in any role.
@@ -107,7 +142,7 @@ class MaterialList(TypedList):
             lists = [(role, self._reaction.properties.get(role) or []) for role in self._ROLES]
         for role, materials in lists:
             for existing in materials:
-                if existing is self._replacing:
+                if any(existing is x for x in self._replacing):
                     continue
                 if existing is element or (element.id is not None and existing.id == element.id):
                     label = element.id if element.id is not None else '(unsaved)'
@@ -146,8 +181,12 @@ class MaterialList(TypedList):
         element.reaction = self._reaction
         element.role_in_reaction = self._mat_type
         # Set by the client, and before the sample is in the list.
+        self._set_position(element, len(self))
+
+    @staticmethod
+    def _set_position(element: Sample, position: int) -> None:
         with element._internal_link_write():
-            element.properties['position'] = len(self)
+            element.properties['position'] = position
         # Not a change of the caller's that only reaction.save() would keep.
         element._pending_link_fields.discard('position')
         element._link_baseline.pop('position', None)
@@ -1014,6 +1053,7 @@ class Reaction(AbstractElement):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._variations: Variations | None = None
+        self._sent_variations: list | dict | None = None
         self._yield_value_cache = None
 
     datetime_format = '%m/%d/%Y %H:%M:%S'
@@ -1451,7 +1491,19 @@ class Reaction(AbstractElement):
         # new material objects, while the caller holds the old ones.
         materials = [*self.starting_materials, *self.reactants, *self.products, *self.solvents,
                      *self.purification_solvents]
+        self._sent_variations = None
         result = super().save(load_after_save)
+        # A PUT does not refresh `json_data`, so the variations just saved become the element's
+        # data: else the rebuild below read the variations as loaded, and the next save sent those
+        # (`properties['variations']`) back over the saved ones. A reload brought them already.
+        sent, self._sent_variations = self._sent_variations, None
+        if sent is not None and not load_after_save:
+            cast(dict, self.json_data)['variations'] = copy.deepcopy(sent)
+            if self._properties is not None:
+                self._properties['variations'] = copy.deepcopy(sent)
+        # Rebuilt from the saved data on next access. Only now: dropped while serialising, the
+        # variations edited in memory were lost when the request failed.
+        self._variations = None
         # The materials' link fields went out with the reaction.
         for material in materials:
             material._clear_pending_link_fields()
@@ -1708,6 +1760,7 @@ class Reaction(AbstractElement):
                 if klass.get('element_klass', {}).get('name') == 'reaction' and klass.get('is_active', True)}
 
     def _clean_variations(self) -> dict:
-        cleand_data = self.variations.clean()
-        self._variations = None
-        return cleand_data
+        cleaned = self.variations.clean()
+        # What a save sends; `save()` keeps it as the element's data once the request succeeded
+        self._sent_variations = cleaned
+        return cleaned

@@ -464,11 +464,10 @@ class ResearchPlan(AbstractElement):
         })
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
-        cast(dict, self.json_data)['body'] = []
-        for elem in self.body:
-            cast(dict, self.json_data)['body'].append(self._reparse_body_element(elem))
-
-        return cast(dict, self.json_data) | {'user_labels': self.properties.get('user_labels')}
+        # Serialising must not change the plan: writing the body into `json_data` left it changed
+        # when the request then failed.
+        body = [self._reparse_body_element(elem) for elem in self.body]
+        return cast(dict, self.json_data) | {'body': body, 'user_labels': self.properties.get('user_labels')}
 
     def add_richtext(self, text: str | None = None, at_idx: int | None = None) -> RichText:
         """
