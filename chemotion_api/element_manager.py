@@ -94,14 +94,19 @@ class ElementManager:
         u = User.load_me(self._session)
         return u
 
-    def get_next_shot_label(self, type_name, session=None):
+    def get_next_shot_label(self, type_name, session=None, _old_session=None):
         """
         The next short label the current user's next element of this type gets.
 
         :param type_name: the element type, e.g. ``sample``
         :param session: unused; kept so existing calls keep working
+        :param _old_session: unused; takes the session of the old call form below
         :return: the next short label
         """
+        if isinstance(type_name, ElementManager):
+            # The old staticmethod took the manager explicitly: `manager.get_next_shot_label(manager,
+            # 'sample', session)` binds the manager to `type_name` and the type to `session` now.
+            type_name = session
         return self._get_short_label(type_name)
 
     def _get_short_label(self, type_name):
