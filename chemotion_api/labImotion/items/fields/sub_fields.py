@@ -8,6 +8,10 @@ from chemotion_api.labImotion.structure import StructureRegistry
 from chemotion_api.labImotion.utils import ChemotionSerializable
 
 
+#: A number as the designer's number input accepts it (HTML ``type="number"``): sign, decimals, exponent.
+NUMBER_PATTERN = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+
+
 class SubBaseField(ChemotionSerializable):
     _default_required_fields = ["id", "field_type", "value"]
     required_fields = []
@@ -64,11 +68,14 @@ class NumberField(SubBaseField):
 
     @value.setter
     def value(self, value: str | float | int):
+        if isinstance(value, bool):
+            raise TypeError(f"value {type(value)} not supported")
         if isinstance(value, float) or isinstance(value, int):
             value = str(value)
         if not isinstance(value, str):
             raise TypeError(f"value {type(value)} not supported")
-        if re.match(r"^[0-9\.]*$", value) is None:
+        # '' is what the designer stores for a new or cleared number sub-field
+        if value != '' and NUMBER_PATTERN.fullmatch(value) is None:
             raise ValueError(f"value must be a number: {value}")
         self._value = value
 
