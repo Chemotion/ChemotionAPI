@@ -3,7 +3,8 @@ from chemotion_api.connection import request_error
 from chemotion_api.elements.abstract_element import AbstractElement
 from chemotion_api.elements.workflow_interface import WorkflowInterface
 from chemotion_api.elements.workflow_manager import Workflow
-from chemotion_api.utils import parse_generic_object_json, clean_generic_object_json, parse_generic_object_layer_json
+from chemotion_api.utils import parse_generic_object_json, clean_generic_object_json, parse_generic_object_layer_json, \
+    release_select_options
 from typing import cast
 from chemotion_api.utils.segment_fields import SegmentField
 
@@ -48,33 +49,41 @@ class GenericElement(AbstractElement, WorkflowInterface):
     def _set_json_data(self, json_data: dict):
         super()._set_json_data(json_data)
 
+    def _element_klass(self) -> dict:
+        # The ELN sends `element_klass: null` for an element shared below detail level 10
+        return self.json_data.get('element_klass') or {}
+
     @property
     def label(self) -> str | None:
         """
-        The label of the element's generic type, e.g. 'Workflow'
+        The label of the element's generic type, e.g. 'Workflow'. None if the server withheld the type.
         """
-        return self.json_data.get('element_klass', {}).get('label')
+        return self._element_klass().get('label')
 
     @property
     def klass_name(self) -> str | None:
         """
-        The internal name of the element's generic type, e.g. 'wrk' (the same as :attr:`element_type`)
+        The internal name of the element's generic type, e.g. 'wrk' (the same as :attr:`element_type`).
+        None if the server withheld the type.
         """
-        return self.json_data.get('element_klass', {}).get('name')
+        return self._element_klass().get('name')
 
     @property
     def klass_version(self) -> str | None:
         """
-        The version of the template the element was created with, e.g. '2.0'
+        The version of the template release the element was last saved with, e.g. '2.0'
+        (``properties_release['version']``). Falls back to the template's current version if the element
+        carries no release version, and is None if neither is known.
         """
-        return self.json_data.get('element_klass', {}).get('version')
+        version = (self.json_data.get('properties_release') or {}).get('version')
+        return version or self._element_klass().get('version')
 
     @property
     def klass_prefix(self) -> str | None:
         """
-        The prefix of the template used in the short label, e.g. 'WRK'
+        The prefix of the template used in the short label, e.g. 'WRK'. None if the server withheld the type.
         """
-        return self.json_data.get('element_klass', {}).get('klass_prefix')
+        return self._element_klass().get('klass_prefix')
 
     def layers_without_fields(self) -> list[str]:
         """
@@ -135,7 +144,7 @@ class GenericElement(AbstractElement, WorkflowInterface):
         if field_mapping is None or field_obj is None:
             raise KeyError(f'Unknown field "{field}" in layer "{layer}". Available: '
                            f'{", ".join(x for x in layer_mapping if not x.startswith("__"))}')
-        return SegmentField(field_obj, layer_key, properties.get('select_options'))
+        return SegmentField(field_obj, layer_key, release_select_options(self.json_data))
 
     def wf_tree(self) -> dict[str,list]:
         """

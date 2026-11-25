@@ -4,7 +4,7 @@ import re
 import sys
 import uuid
 from abc import ABC
-from collections.abc import MutableMapping, MutableSequence
+from collections.abc import Iterable, Mapping, MutableMapping, MutableSequence
 from collections import OrderedDict
 from typing import Any, Optional
 
@@ -155,7 +155,7 @@ class AttrAccessMixin:
 def add_to_dict(obj: dict, key: str, val: any) -> str:
     origen_key = key
     idx = 1
-    while key in obj and obj[key] is not None:
+    while key in obj:
         key = f"{origen_key}.{idx}"
         idx += 1
 
@@ -163,8 +163,44 @@ def add_to_dict(obj: dict, key: str, val: any) -> str:
     return key
 
 
+#: Column names of the four text sub-fields of a datetime-range field, in the order the ELN web form creates
+#: them. ``durationCalc`` is not exposed: the web form shows the computed difference without storing it.
+DATETIME_RANGE_PARTS = ('timeStart', 'timeStop', 'durationCalc', 'duration')
+_DATETIME_RANGE_VALUES = ('timeStart', 'timeStop', 'duration')
+_DURATION_DEFAULT_UNIT = 'd'
+
+
+def _read_select_multi(field: dict) -> list:
+    """Reads a select-multi field as the list of selected option keys, stored as ``sub_fields = [{'value': key}]``."""
+    return [x.get('value') for x in field.get('sub_fields') or []
+            if isinstance(x, dict) and x.get('value') not in (None, '')]
+
+
+def _read_datetime_range(field: dict) -> dict:
+    """
+    Reads a datetime-range field as ``{'timeStart': str, 'timeStop': str, 'duration': {'value', 'unit'}}``.
+    Without stored sub-fields it reads as the empty web form: ``''`` and the unit ``'d'``.
+    """
+    parts = {x.get('col_name'): x for x in field.get('sub_fields') or [] if isinstance(x, dict)}
+    duration = parts.get('duration', {})
+
+    def text(part: dict) -> Any:
+        # A null reads as '', as writing it back stores it: else an untouched field changed on save
+        value = part.get('value')
+        return '' if value is None else value
+
+    return {'timeStart': text(parts.get('timeStart', {})),
+            'timeStop': text(parts.get('timeStop', {})),
+            'duration': {'value': text(duration),
+                         'unit': duration.get('value_system') or _DURATION_DEFAULT_UNIT}}
+
+
 def parse_generic_field(field: dict) -> dict[str, any]:
     sub_fields = field.get('sub_fields')
+    if field.get('type') == 'select-multi':
+        return {'values': _read_select_multi(field), 'obj_mapping': field.get('id', field.get('field'))}
+    if field.get('type') == 'datetime-range':
+        return {'values': _read_datetime_range(field), 'obj_mapping': field.get('id', field.get('field'))}
     if type(sub_fields) is list and len(sub_fields) > 0:
         field_mapping = {'__field': field.get('field')}
         field_vals = None
@@ -180,7 +216,8 @@ def parse_generic_field(field: dict) -> dict[str, any]:
             for sub_field in sub_fields:
                 add_to_dict(field_mapping, sub_field.get('col_name'), sub_field.get('id'))
                 for (idx, value) in enumerate(value_list):
-                    add_to_dict(field_vals[idx], sub_field.get('col_name'), value[sub_field.get('id')])
+                    # a row without a cell for a column (e.g. a column added later) reads as None there
+                    add_to_dict(field_vals[idx], sub_field.get('col_name'), value.get(sub_field.get('id')))
 
         return {'values': field_vals, 'obj_mapping': field_mapping}
     elif field.get('type') == 'system-defined':
@@ -194,12 +231,12 @@ def parse_generic_field(field: dict) -> dict[str, any]:
 def parse_generic_layer(key: str, layer: dict) -> dict[str, dict]:
     temp_layer = {}
     temp_id_layer = {'__key': key}
-    fields = layer.get('fields', [])
-    fields.sort(key=lambda x: x.get('position'))
+    # sorted(), not fields.sort(): the order of the element's raw fields stays as the server sent it
+    fields = sorted(layer.get('fields', []), key=lambda x: x.get('position'))
     for field in fields:
         if field.get('type') != 'wf-next':
             temp_field = parse_generic_field(field)
-            field_name = field.get('label') if len(field.get('label')) > 0 else field.get('field')
+            field_name = field.get('label') or field.get('field')
             key = add_to_dict(temp_layer, field_name, temp_field.get('values'))
             temp_id_layer[key] = temp_field.get('obj_mapping')
 
@@ -224,7 +261,7 @@ def parse_generic_object_layer_json(key, layer, values, obj_mapping) -> str:
     depend on the order the layers are read in.
     """
     temp_layer = parse_generic_layer(key, layer)
-    layer_name = layer.get('label') if len(layer.get('label')) > 0 else layer.get('key')
+    layer_name = layer.get('label') or layer.get('key') or key
     suffix = re.fullmatch(r'.+\.(\d+)', key or '')
     if suffix is not None and not layer_name.endswith(f".{suffix.group(1)}") and \
             f"{layer_name}.{suffix.group(1)}" not in values:
@@ -237,6 +274,12 @@ def parse_generic_object_layer_json(key, layer, values, obj_mapping) -> str:
 def clean_generic_field(field_obj: dict, values: Any, field_mapping: dict | str | None = None,
                         select_options: dict | None = None) -> dict[str, Any]:
     sub_fields = field_obj.get('sub_fields')
+    if field_obj.get('type') == 'select-multi':
+        _clean_select_multi(field_obj, values, select_options)
+        return field_obj
+    if field_obj.get('type') == 'datetime-range':
+        _clean_datetime_range(field_obj, values)
+        return field_obj
     if field_obj.get('type') in ('select', 'system-defined', 'integer'):
         values = _check_generic_field_value(field_obj, values, select_options)
     if type(sub_fields) is list and len(sub_fields) > 0:
@@ -250,7 +293,10 @@ def clean_generic_field(field_obj: dict, values: Any, field_mapping: dict | str 
                 value_list.append({'id': uuid.uuid4().__str__()})
             for (k, v) in enumerate(values):
                 for (k1, v1) in v.items():
-                    value_list[k][field_mapping[k1]] = v1
+                    col_id = field_mapping[k1]
+                    if v1 is None and col_id not in value_list[k]:
+                        continue  # a missing cell read as None stays missing
+                    value_list[k][col_id] = v1
 
     elif field_obj.get('type') == 'system-defined':
         field_obj['value'] = values['value']
@@ -262,8 +308,94 @@ def clean_generic_field(field_obj: dict, values: Any, field_mapping: dict | str 
     return field_obj
 
 
+def _clean_select_multi(field_obj: dict, values: Any, select_options: dict | None):
+    """
+    Writes the option keys of a select-multi field into ``sub_fields`` as ``[{'value': key}]``, as the ELN
+    web form does. Unchanged values leave the field as stored. If the template's options are known, every
+    key must be one of them.
+    """
+    if values == _read_select_multi(field_obj):
+        return
+    label = field_obj.get('label') or field_obj.get('field')
+    if values is None:
+        values = []
+    if isinstance(values, (str, bytes)) or not isinstance(values, Iterable):
+        raise ValueError(f'Invalid value for field "{label}": a select-multi field needs a list of option keys, '
+                         f'got {values!r}.')
+    keys = list(dict.fromkeys(values))
+    options = ((select_options or {}).get(field_obj.get('option_layers')) or {}).get('options') or []
+    known = [o.get('key') for o in options if isinstance(o, dict)]
+    unknown = [k for k in keys if known and k not in known]
+    if unknown:
+        raise ValueError(f'Invalid value for field "{label}": {", ".join(map(repr, unknown))} not an option key. '
+                         f'Options: {", ".join(map(str, known))}')
+    field_obj['sub_fields'] = [{'value': key} for key in keys]
+
+
+def _clean_datetime_range(field_obj: dict, values: Any):
+    """
+    Writes a datetime-range value ``{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}`` into the four text
+    sub-fields of the field, creating missing ones as the ELN web form does. A partial dict changes only the
+    parts given; a bare ``duration`` keeps the current unit; ``None`` clears all parts. Unchanged values leave
+    the field as stored.
+    """
+    label = field_obj.get('label') or field_obj.get('field')
+    current = _read_datetime_range(field_obj)
+    if values is None:
+        values = {'timeStart': '', 'timeStop': '', 'duration': {'value': '', 'unit': current['duration']['unit']}}
+    if not isinstance(values, Mapping):
+        raise ValueError(f'Invalid value for field "{label}": a datetime-range field needs a dict with '
+                         f'{", ".join(_DATETIME_RANGE_VALUES)}, got {values!r}.')
+    unknown = [k for k in values if k not in _DATETIME_RANGE_VALUES]
+    if unknown:
+        raise ValueError(f'Invalid value for field "{label}": no part {", ".join(map(str, unknown))}. '
+                         f'Parts: {", ".join(_DATETIME_RANGE_VALUES)}')
+    changed = {}
+    for name in _DATETIME_RANGE_VALUES:
+        if name not in values:
+            continue
+        value = values[name]
+        if name == 'duration':
+            value = dict(value) if isinstance(value, Mapping) else {'value': value}
+            value = {'value': '' if value.get('value') is None else value.get('value'),
+                     'unit': value.get('unit') or current['duration']['unit']}
+        elif value is None:
+            value = ''
+        if value != current[name]:
+            changed[name] = value
+    if not changed:
+        return
+
+    sub_fields = field_obj.get('sub_fields') or []
+    for name in DATETIME_RANGE_PARTS:
+        if not any(isinstance(x, dict) and x.get('col_name') == name for x in sub_fields):
+            part: dict[str, Any] = {'type': 'text', 'value': '', 'col_name': name}
+            if name == 'duration':
+                part |= {'option_layers': 'duration', 'value_system': _DURATION_DEFAULT_UNIT}
+            sub_fields.append(part | {'id': str(uuid.uuid4())})
+    field_obj['sub_fields'] = sub_fields
+    parts = {x.get('col_name'): x for x in sub_fields if isinstance(x, dict)}
+    for name in ('timeStart', 'timeStop'):
+        if name in changed:
+            parts[name]['value'] = changed[name]
+    if 'duration' in changed:
+        parts['duration']['value'] = changed['duration']['value']
+        parts['duration']['value_system'] = changed['duration']['unit']
+
+
+def release_select_options(json_data: dict) -> dict:
+    """
+    The ``select_options`` of a generic element, segment or dataset. The ELN drops them from a saved element's
+    ``properties``, so they are taken from its template release (``properties_release``) when ``properties``
+    has none.
+    """
+    return (json_data.get('properties') or {}).get('select_options') or \
+        (json_data.get('properties_release') or {}).get('select_options') or {}
+
+
 def clean_generic_object_json(segment_json_data: dict, values: dict, mapping: dict):
     properties: dict = segment_json_data['properties']
+    select_options = release_select_options(segment_json_data)
     for (k, v) in values.items():
         layer_mapping = mapping.get(k, {})
         layer_key = layer_mapping.get('__key')
@@ -284,7 +416,7 @@ def clean_generic_object_json(segment_json_data: dict, values: dict, mapping: di
                 available = [name for name in layer_mapping if not name.startswith('__')]
                 raise ValueError(f'Unknown field "{value_name}" in layer "{k}". Fields are named as in the template '
                                  f'version the element uses. Available: {", ".join(available)}')
-            clean_generic_field(field_obj, value_ob, field_mapping, properties.get('select_options'))
+            clean_generic_field(field_obj, value_ob, field_mapping, select_options)
 
 
 def _check_generic_field_value(field_obj: dict, values: Any, select_options: dict | None) -> Any:

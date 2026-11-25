@@ -30,7 +30,8 @@ from chemotion_api.elements.versions import Version, load_versions
 from chemotion_api.generic_segments import GenericSegments
 from chemotion_api.utils.segment_fields import SegmentField, iter_fields
 from chemotion_api.utils import safe_join, add_to_dict, parse_generic_object_json, AttrAccessMixin, \
-    clean_generic_object_json, merge_dicts, snake_to_camel_case, fixeddict_serializer, PropertyDict
+    clean_generic_object_json, merge_dicts, snake_to_camel_case, fixeddict_serializer, PropertyDict, \
+    release_select_options
 
 import logging
 
@@ -435,7 +436,6 @@ class Segment(dict):
             if seg is None or seg.get('element_klass').get('name') != self._element_type:
                 raise TypeError(f'Segemnt "{key}" is not for element "{self._element_type}"')
             new_seq_obj = GenericSegments.new_session(seg)
-            key = add_to_dict(self, key, None)
             val = self[key] = self._on_add(key, new_seq_obj)
         return val
 
@@ -996,8 +996,15 @@ class AbstractElement:
         # page cost 51 requests, and a transient failure left `_load_failed` on an element that
         # had merely been listed. Loading stays lazy: the first real property read triggers it.
         # The same holds for the segments and analyses getters, which load too.
-        add_to_dict(self._segments, 'Properties', PropertyDict(self.on_properties_change, self._properties_data))
-        add_to_dict(self._segments, 'Analyses', self._analyses)
+        for name, value in (('Properties', PropertyDict(self.on_properties_change, self._properties_data)),
+                            ('Analyses', self._analyses)):
+            # A generic segment of this label the element does not have yet holds a None
+            # placeholder: the built-in entry keeps its documented name over it, as it did before
+            # `add_to_dict` stopped overwriting None values.
+            if dict.get(self._segments, name, False) is None:
+                dict.__setitem__(self._segments, name, value)
+            else:
+                add_to_dict(self._segments, name, value)
 
     def _on_add_segment(self, key: str, segment_data: dict) -> dict:
         temp_segment = parse_generic_object_json(segment_data)
@@ -1572,7 +1579,8 @@ class AbstractElement:
         mapping = self._segments_mapping.get(segment)
         if mapping is not None:
             segment_json = next(x for x in (self.json_data or {}).get('segments', []) if x.get('id') == mapping['__id'])
-            properties = segment_json.get('properties', {})
+            # a saved record may lack its select_options; they are in its release then
+            properties = segment_json.get('properties', {}) | {'select_options': release_select_options(segment_json)}
         else:
             # A segment the element does not have yet: look the field up in the template
             klass = next((x for x in self._generic_segments.all_classes if x.get('label') == segment
