@@ -63,3 +63,30 @@ def test_slice_assignment_binds_samples_to_the_reaction():
     assert list(reaction.properties['solvents']) == [first, second]
     for sample in (first, second):
         assert sample.reaction is reaction and sample.role_in_reaction == 'solvents'
+
+
+def test_slice_assignment_gives_each_sample_its_position():
+    reaction = _reaction([])
+    a, b, c = _sample(11), _sample(12), _sample(13)
+    reaction.solvents.extend([a, b])
+    reaction.solvents[0:1] = [c]
+    assert [s.properties['position'] for s in reaction.solvents] == [0, 1]
+    reaction.solvents[1] = a
+    assert a.properties['position'] == 1
+
+
+def test_slice_assignment_refuses_a_sample_given_twice():
+    reaction = _reaction([])
+    solvent = _sample(14)
+    with pytest.raises(ValueError, match='given twice'):
+        reaction.solvents[0:0] = [solvent, solvent]
+    assert list(reaction.solvents) == []
+
+
+def test_a_slice_may_put_back_the_samples_it_replaces():
+    reaction = _reaction([])
+    a, b = _sample(15), _sample(16)
+    reaction.solvents.extend([a, b])
+    reaction.solvents[:] = [b, a]
+    assert list(reaction.solvents) == [b, a]
+    assert [s.properties['position'] for s in reaction.solvents] == [0, 1]
