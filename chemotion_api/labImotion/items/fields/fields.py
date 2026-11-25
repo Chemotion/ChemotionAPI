@@ -146,7 +146,7 @@ class FormulaFieldField(BaseField):
     def decimal(self, value: str | int):
         if isinstance(value, int):
             value = str(value)
-        if re.match(r"^[0-9]+$", value) is None:
+        if re.fullmatch(r"[0-9]+", value) is None:
             raise TypeError(f"decimal {type(value)} not supported. Must be a positive integer as string.")
         self._decimal = value
 

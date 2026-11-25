@@ -9,7 +9,8 @@ from chemotion_api.labImotion.utils import ChemotionSerializable
 
 
 #: A number as the designer's number inputs accept it (HTML ``type="number"``): sign, decimals, exponent.
-NUMBER_PATTERN = re.compile(r'^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$')
+# use with fullmatch: '$' would also match before a trailing newline
+NUMBER_PATTERN = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
 
 
 class SubBaseField(ChemotionSerializable):
@@ -97,7 +98,7 @@ class NumberField(SubBaseField):
             value = str(value)
         if not isinstance(value, str):
             raise TypeError(f"value {type(value)} not supported")
-        if value != '' and NUMBER_PATTERN.match(value) is None:
+        if value != '' and NUMBER_PATTERN.fullmatch(value) is None:
             raise ValueError(f"value must be a number: {value}")
         self._value = value
 

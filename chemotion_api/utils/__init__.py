@@ -155,7 +155,7 @@ class AttrAccessMixin:
 def add_to_dict(obj: dict, key: str, val: any) -> str:
     origen_key = key
     idx = 1
-    while key in obj and obj[key] is not None:
+    while key in obj:
         key = f"{origen_key}.{idx}"
         idx += 1
 
@@ -224,15 +224,22 @@ def _read_table_cell(column: dict, cell: Any) -> Any:
 
 def _read_datetime_range(field: dict) -> dict:
     """
-    Reads a datetime-range field as ``{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}``. Without
-    stored sub-fields it reads as the empty form: ``''`` and unit ``'d'``.
+    Reads a datetime-range field as ``{'timeStart': str, 'timeStop': str, 'duration': {'value', 'unit'}}``.
+    Without stored sub-fields it reads as the empty form: ``''`` and unit ``'d'``. A stored ``null`` reads the
+    same way (``''``, unit ``'d'``), so the documented string shape holds; an untouched field still saves as
+    stored, because :func:`_clean_datetime_range` only rewrites parts that changed.
     """
     parts = {x.get('col_name'): x for x in field.get('sub_fields') or [] if isinstance(x, dict)}
     duration = parts.get('duration', {})
-    return {'timeStart': parts.get('timeStart', {}).get('value', ''),
-            'timeStop': parts.get('timeStop', {}).get('value', ''),
-            'duration': {'value': duration.get('value', ''),
-                         'unit': duration.get('value_system', _DURATION_DEFAULT_UNIT)}}
+
+    def text(part: dict) -> Any:
+        value = part.get('value')
+        return '' if value is None else value
+
+    return {'timeStart': text(parts.get('timeStart', {})),
+            'timeStop': text(parts.get('timeStop', {})),
+            'duration': {'value': text(duration),
+                         'unit': duration.get('value_system') or _DURATION_DEFAULT_UNIT}}
 
 
 def parse_generic_field(field: dict) -> dict[str, any]:
@@ -278,8 +285,8 @@ def parse_generic_field(field: dict) -> dict[str, any]:
 def parse_generic_layer(key: str, layer: dict) -> dict[str, dict]:
     temp_layer = {}
     temp_id_layer = {'__key': key}
-    fields = layer.get('fields', [])
-    fields.sort(key=lambda x: x.get('position'))
+    # sorted(), not fields.sort(): reading leaves the raw fields in the order the server sent them
+    fields = sorted(layer.get('fields') or [], key=lambda x: x.get('position') or 0)
     for field in fields:
         if field.get('type') != 'wf-next':
             temp_field = parse_generic_field(field)
@@ -421,21 +428,29 @@ def _clean_datetime_range(field_obj: dict, values: Any):
     if unknown:
         raise ValueError(f'Datetime range "{label}" has no part {", ".join(map(str, unknown))}. '
                          f'Parts: {", ".join(_DATETIME_RANGE_VALUES)}')
-    changed = {k: v for k, v in values.items() if v != current[k]}
+    changed = {}
+    for name, value in values.items():
+        # compare in the read shape: None is '' and a duration without unit keeps the current unit
+        if name == 'duration':
+            value = value if isinstance(value, dict) else {'value': value}
+            value = {'value': '' if value.get('value') is None else value.get('value'),
+                     'unit': value.get('unit') or current['duration']['unit']}
+        elif value is None:
+            value = ''
+        if value != current[name]:
+            changed[name] = value
     if not changed:
         return
     duration = None
     if 'duration' in changed:
-        duration = changed['duration'] if isinstance(changed['duration'], dict) else \
-            {'value': changed['duration'], 'unit': current['duration']['unit']}
-        unit = duration.get('unit') or current['duration']['unit']
+        duration = changed['duration']
+        unit = duration['unit']
         from chemotion_api.labImotion.items.options import FieldUnit, UNITS
         if unit not in UNITS[FieldUnit.DURATION]:
             raise ValueError(f'"{unit}" is not a unit of the duration of "{label}". '
                              f'Units: {", ".join(UNITS[FieldUnit.DURATION])}')
         if duration.get('value') not in (None, '') and to_decimal(duration.get('value')) is None:
             raise ValueError(f'The duration of "{label}" needs a number, got {duration.get("value")!r}.')
-        duration = {'value': '' if duration.get('value') is None else duration.get('value'), 'unit': unit}
 
     sub_fields = field_obj.get('sub_fields') or []
     for name in DATETIME_RANGE_PARTS:

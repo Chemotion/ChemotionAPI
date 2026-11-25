@@ -224,7 +224,7 @@ class Layer(ChemotionSerializable, ConditionHandler):
 
     @style.setter
     def style(self, style: str):
-        if re.match(r'^panel_generic_heading$|^panel_generic_heading_([bui])(?!.*\1)([bui])?(?!.*\1|.*\2)([bui])?$',
+        if re.fullmatch(r'panel_generic_heading|panel_generic_heading_([bui])(?!.*\1)([bui])?(?!.*\1|.*\2)([bui])?',
                     style) is not None:
             self._style = style
         else:
