@@ -79,10 +79,14 @@ class Table(dict):
         """
         return self['id']
 
-    def _get_col_id(self):
+    def _get_col_id(self) -> str:
+        # The first free letter 'a'-'z'; once all are taken, a UUID, as the web editor
+        # (ResearchPlanDetailsFieldTable.buildColumnSimple) gives every column it adds.
+        taken = {x['colId'] for x in self['value']['columns']}
         for l in ascii_lowercase:
-            if len([x for x in self['value']['columns'] if x['colId'] == l]) == 0:
+            if l not in taken:
                 return l
+        return str(uuid.uuid4())
 
     def column_id_by_label(self, label: str) -> str:
         """
@@ -116,7 +120,8 @@ class Table(dict):
     def add_columns(self, *labels: str) -> list[str]:
         """
         Adds one or more columns to the table. It adds a column for
-        each label given as an argument. Column IDs are single letters ('a' to 'z').
+        each label given as an argument. Column IDs are single letters ('a' to 'z'); once these
+        are taken, a column gets a UUID, as in the web editor.
 
         :param labels: labels of columns to be added
         :return: list of the column IDs
@@ -465,11 +470,10 @@ class ResearchPlan(AbstractElement):
         })
 
     def _clean_properties_data(self, serialize_data: dict | None = None) -> dict:
-        cast(dict, self.json_data)['body'] = []
-        for elem in self.body:
-            cast(dict, self.json_data)['body'].append(self._reparse_body_element(elem))
-
-        return cast(dict, self.json_data) | {'user_labels': self.properties.get('user_labels')}
+        # Serialising must not change the plan: writing the body into `json_data` left it changed
+        # when the request then failed.
+        body = [self._reparse_body_element(elem) for elem in self.body]
+        return cast(dict, self.json_data) | {'body': body, 'user_labels': self.properties.get('user_labels')}
 
     def add_richtext(self, text: str | None = None, at_idx: int | None = None) -> RichText:
         """

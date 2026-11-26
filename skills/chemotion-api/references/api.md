@@ -45,7 +45,7 @@ Instance(host_url: str | Connection, verify_ssl: bool = True, username=None, pas
   .get_collection_by_id(collection_id) -> Collection
   .get_collection_of_element(element) -> Collection
   .get_sample(id) / .get_reaction(id) / .get_wellplate(id) / .get_research_plan(id)
-  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for an unknown type or an id of another type
+  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for an unknown or built-in type, or an id of another type
   .get_json_ld_id(element.json_ld['@id']) -> element
   .get_all_types() -> list[str]               # JSON-LD types (IRIs)
   .all_element_classes                        # dict of all element types incl. generic ones

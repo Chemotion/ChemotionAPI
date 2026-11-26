@@ -2,14 +2,12 @@ import copy
 import json
 import uuid
 
-from chemotion_api.connection import Connection
+from chemotion_api.connection import Connection, request_error
 from chemotion_api.elements.sample import MoleculeManager
 import os.path
 from chemotion_api.user import User
 
 from chemotion_api.elements.empty_elements import init_container
-
-from requests.exceptions import RequestException
 
 from chemotion_api.utils import resource_path
 from chemotion_api.utils.solvent_manager import get_solvent_list, get_solvent_info
@@ -66,7 +64,7 @@ class ElementManager:
                     "/api/v1/generic_elements/klass_revisions.json",
                     params={'id': class_obj['id'], 'klass': 'ElementKlass'})
                 if res.status_code != 200:
-                    raise RequestException('Counld not get the genetic elements')
+                    raise request_error(res, f'loading the revisions of generic element klass {name!r}')
                 for revision in res.json()['revisions']:
                     if revision['version'] is not None:
                         version_list[name].add(revision['version'])
@@ -77,7 +75,7 @@ class ElementManager:
         get_url = "/api/v1/generic_elements/klasses.json"
         res = self._session.get(get_url)
         if res.status_code != 200:
-            raise RequestException('Counld not get the genetic elements')
+            raise request_error(res, 'loading the generic element klasses')
         all_classes = {}
         for x in res.json()['klass']:
             all_classes[x['name']] = x
@@ -96,8 +94,19 @@ class ElementManager:
         u = User.load_me(self._session)
         return u
 
-    @staticmethod
-    def get_next_shot_label(self, type_name, session):
+    def get_next_shot_label(self, type_name, session=None, _old_session=None):
+        """
+        The next short label the current user's next element of this type gets.
+
+        :param type_name: the element type, e.g. ``sample``
+        :param session: unused; kept so existing calls keep working
+        :param _old_session: unused; takes the session of the old call form below
+        :return: the next short label
+        """
+        if isinstance(type_name, ElementManager):
+            # The old staticmethod took the manager explicitly: `manager.get_next_shot_label(manager,
+            # 'sample', session)` binds the manager to `type_name` and the type to `session` now.
+            type_name = session
         return self._get_short_label(type_name)
 
     def _get_short_label(self, type_name):
@@ -127,8 +136,20 @@ class ElementManager:
                             "sample": None
                         })
         else:
-            res = self._session.get('api/v1/generic_elements/klass.json', params={'name': type_name})
+            res = self._session.get('/api/v1/generic_elements/klass.json', params={'name': type_name})
+            if res.status_code != 200:
+                raise request_error(res, f'loading the generic element type "{type_name}"')
+            # An unknown name answers 200 with `{"klass": null}`; a server-side failure with
+            # `{"klass": []}`.
             klass_obj = res.json().get('klass')
+            if not isinstance(klass_obj, dict):
+                raise ValueError(f'The server has no generic element type "{type_name}" '
+                                 f'(it may have been deleted since the element types were loaded).')
+            # A klass never released has `properties_release` null, or `{}` (the column default)
+            release = klass_obj.get('properties_release')
+            if not isinstance(release, dict) or not isinstance(release.get('layers'), dict):
+                raise ValueError(f'The generic element type "{type_name}" has no released template, '
+                                 f'so no element can be created from it. Release the template first.')
             properties_release = copy.deepcopy(klass_obj['properties_release'])
             for key, layer in klass_obj['properties_release']['layers'].items():
                 if not layer['wf']:

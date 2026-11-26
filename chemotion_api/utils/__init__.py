@@ -334,7 +334,7 @@ def _merge_dicts(a: dict | list, b: dict | list, path: list = None):
         elif isinstance(elem, list):
             try:
                 return elem[idx]
-            except:
+            except (IndexError, TypeError):
                 pass
         return None
 
@@ -345,7 +345,7 @@ def _merge_dicts(a: dict | list, b: dict | list, path: list = None):
         elif isinstance(elem, list):
             try:
                 elem[idx] = value
-            except:
+            except (IndexError, TypeError):
                 elem.append(value)
 
     for key, b_val in iterator:
@@ -402,11 +402,19 @@ class TypedList(list):
 
     def __setitem__(self, index, element):
         if isinstance(index, slice):
-            for i in element:
-                self._check_element(element)
-        else:
-            self._check_element(element)
-        super().__setitem__(index, self._prepare_element(element))
+            # Checked and prepared item by item, as append() does; the iterable itself is no element.
+            items = list(element)
+            for item in items:
+                self._check_element(item)
+            prepared = [self._prepare_element(item) for item in items]
+            super().__setitem__(index, prepared)
+            for item in prepared:
+                self.after_append(item)
+            return
+        self._check_element(element)
+        prepared_element = self._prepare_element(element)
+        super().__setitem__(index, prepared_element)
+        self.after_append(prepared_element)
 
     def __add__(self, other):
         x = copy.copy(self)
