@@ -356,7 +356,8 @@ Field values (the same for generic `properties`, segments and dataset metadata):
 ```
 text, textarea     str (as given)             number           number or '' (numeric: decimals/min/max)
 integer            whole number (as given)    checkbox         True / False only
-select             option key (label -> key)  select-multi     [keys] (labels -> keys, deduplicated)
+select             option key (label -> key)  select-multi     [keys] (labels -> keys, deduplicated;
+                                                                as given if the template has no options)
 system-defined     {'value', 'unit'}          datetime         'DD/MM/YYYY HH:mm:ss' (datetime ok; None clears)
 datetime-range     {'timeStart', 'timeStop', 'duration': {'value', 'unit'}}  (partial dict: only those parts)
 ontology-select    term label (str)           formula-field    as given (never computed)

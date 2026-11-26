@@ -30,6 +30,9 @@ documentation: docs/LabIMotionTemplates.rst and docs/GenericFieldValues.rst.
 - Values are checked where they were stored as given before: checkbox values must be `bool`, number
   values must fit the field's `numeric`, select-multi values must be options. An unknown table column
   name raises `ValueError` (was `KeyError`).
+- **`GenericElement.klass_version` is the version of the template release the element was saved
+  with** (`properties_release['version']`), as its docstring said, no longer the template's current
+  version; it falls back to the current version when the element has no release version.
 
 ### Fixed: templates (#40)
 
@@ -72,6 +75,23 @@ documentation: docs/LabIMotionTemplates.rst and docs/GenericFieldValues.rst.
   the ELN drops `select_options` from saved records; options now come from `properties_release`.
 - `SegmentField.options()` works for select-multi fields; `SegmentField.clean_value()` covers
   select-multi, number, checkbox, datetime and ontology-select.
+
+### Fixed: ported from the release line (#43, #47)
+
+- Of two fields, layers or segments with the same label, a first one reading `None` was overwritten
+  by the second (`add_to_dict` took a key holding `None` as free); the second now gets `.1`. A generic
+  segment labelled `Properties` or `Analyses` that the element does not have yet no longer pushes the
+  built-in entries to `Properties.1`/`Analyses.1`.
+- `GenericElement.label`, `klass_name`, `klass_version` and `klass_prefix` are `None` instead of
+  raising `AttributeError` when the server withholds `element_klass` (an element shared below detail
+  level 10).
+- Reading a layer no longer sorts the record's raw `fields` list in place.
+- datetime-range parts stored as `null` read as `''` (unit `'d'`), the documented string shape; they
+  read as `None` before. An untouched field, or one given the empty form, still saves as stored.
+- select-multi values are taken as given when the template has no options for the field (every value
+  was refused); with known options unknown keys are still refused.
+- Number and digit checks of the template classes (input-group number sub-field, formula `decimal`,
+  layer `style`) no longer accept a trailing newline.
 
 ### Docs
 

@@ -70,7 +70,8 @@ longer fits the template.
        stored as a string
    * - select-multi
      - list of option keys, ``[]`` for none
-     - a list (or one item) of keys or labels; stored as keys without duplicates
+     - a list (or one item) of keys or labels; stored as keys without duplicates. If the template has
+       no options for the field, the keys are stored as given
    * - system-defined
      - ``{'value': ..., 'unit': ...}``
      - the value must be a number or ``''``/None; the unit must be one of the field's unit type. A bare
@@ -80,7 +81,8 @@ longer fits the template.
      - a :class:`datetime.datetime` (or date) is formatted so; strings are stored as given; None removes
        the value
    * - datetime-range
-     - ``{'timeStart': str, 'timeStop': str, 'duration': {'value', 'unit'}}``
+     - ``{'timeStart': str, 'timeStop': str, 'duration': {'value', 'unit'}}``; parts that are empty or
+       stored as null read as ``''``, a missing unit as ``'d'``
      - a dict with any of the three parts; only those change. Times as for datetime. ``duration`` takes
        ``{'value', 'unit'}`` or a bare number (current unit); the unit must be a duration unit (``d``,
        ``h``, ``min``, ``s``, ``y``). The duration is not computed from start and stop

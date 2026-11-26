@@ -158,7 +158,8 @@ class SegmentField:
 
         * select: the option **key** (an option may be given by key or label). A field listing the ELN's
           users takes a user id, stored as a string.
-        * select-multi: a list of option keys, without duplicates
+        * select-multi: a list of option keys, without duplicates. If the field's options are unknown (the
+          template has no option list for it), the keys are taken as given.
         * system-defined: ``{'value': ..., 'unit': ...}``. A bare number gets the field's default unit.
         * number: a number, rounded to no more than ``numeric['decimals']`` places and within
           ``numeric['min']``/``['max']``; ``''`` for no value
@@ -203,11 +204,16 @@ class SegmentField:
             value = [value]
         if not isinstance(value, (list, tuple, set)):
             raise ValueError(f'"{self.label}" needs a list of options, got {value!r}.')
+        # If the field's options are unknown (no option list for its option_layers), keys are taken as given
+        options_known = self.quantity != USER_LIST and bool(self.options())
         keys: list[str] = []
         for item in value:
             if item in _EMPTY:
                 continue
-            key = str(item) if self.quantity == USER_LIST else self.option_key(item)
+            if self.quantity == USER_LIST:
+                key = str(item)
+            else:
+                key = self.option_key(item) if options_known else item
             if key not in keys:
                 keys.append(key)
         return keys

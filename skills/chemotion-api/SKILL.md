@@ -230,7 +230,7 @@ values are checked, on `save()`, with a `ValueError` naming the field):
 | integer (old) | whole number, stored as given |
 | checkbox | `True`/`False` only |
 | select | option key; label accepted, stored as key (`'-su03-'` user list: user id) |
-| select-multi | list of option keys (labels accepted) |
+| select-multi | list of option keys (labels accepted; keys taken as given if the template has no options for it) |
 | system-defined | `{'value': 25, 'unit': 'C'}`; a bare number gets the default unit |
 | datetime | `'DD/MM/YYYY HH:mm:ss'`; `datetime` objects converted; `None` clears |
 | datetime-range | `{'timeStart', 'timeStop', 'duration': {'value', 'unit'}}`; a partial dict changes only those parts |
