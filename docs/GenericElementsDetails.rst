@@ -80,6 +80,12 @@ Notes:
 * Elements address their fields by the labels of the template version they were created with. After a
   label change, existing elements keep the old names; unknown names raise a ``ValueError`` on save.
 * The ``description`` is stored as ``desc``; the short label prefix is ``klass.klass_prefix``.
+* A TABLE field's columns are added with ``table.add_subfield(SubTableFieldType.X, col_name)``: DRAG_MOLECULE,
+  DRAG_SAMPLE, SELECT, SYSTEM_DEFINED, TEXT and, as in the ELN 4.0 designer, NUMBER, SELECT_MULTI and
+  FORMULA_FIELD. A formula column computes its cells from other columns of the row:
+  ``calc.add_ref(mass, 'm').add_ref(count, 'n'); calc.formula = 'm/n'; calc.decimal = 2`` (``refs`` is
+  ``[{'id': <column id>, 'abbr': <variable>}]``, ``decimal`` defaults to 5). A column of a type this client
+  does not know is kept as it is.
 * ``load_all_elements()`` skips templates that do not validate (with a warning); pass ``strict=True`` to
   :meth:`GenericElementKlass.load_all` to get the error instead.
 * Element types are cached by the instance. :meth:`~chemotion_api.collection.Collection.new_generic_by_label`
