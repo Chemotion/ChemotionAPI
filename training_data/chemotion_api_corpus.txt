@@ -1,0 +1,2768 @@
+===== skills/chemotion-api/SKILL.md =====
+---
+name: chemotion-api
+description: How to read and write data in a Chemotion ELN v4 (electronic lab notebook) with the chemotion_api Python package - samples, reactions, research plans, wellplates, screens, cell lines, device descriptions, vessels, sequence-based macromolecule samples, generic (LabIMotion) elements, collections and sharing, segments, analyses/datasets, attachments and annotations, comments, versions, literature, structure search, collection export/import, reports, the inbox, chemical inventory and safety data sheets, measurements, spectra, text templates, and administration. Use this skill whenever code imports chemotion_api, whenever a task involves a Chemotion instance (creating or editing samples or reactions, setting amounts or equivalents, uploading measurement files, filling segment fields, sharing or exporting collections, generating reports), or when the user mentions Chemotion, ChemAssistent or an ELN at KIT - even if they don't name the package.
+---
+
+# chemotion_api cheat sheet
+
+`chemotion_api` wraps the REST API of a Chemotion ELN. Objects are edited locally and only reach the
+server on `save()`. Everything you change through it is changed in a real lab notebook used by real
+people, so read before you write, change only what the task asks for, and confirm with the user before
+bulk edits or deletions. If a test instance exists, try risky operations there first.
+
+For full method signatures and all property keys, read `references/api.md`.
+
+## Connect
+
+```python
+from chemotion_api import Instance
+
+instance = Instance('https://eln.example.org').test_connection().login_token('chemtoken_...')
+# test_connection() raises ConnectionError
+# API token: ELN > Account & Profile > Account > Authentication Token (needs 2FA). Instance(url, token=...) also works.
+# login(user, password) is deprecated (FutureWarning)
+```
+
+## Find things
+
+```python
+root = instance.get_root_collection()            # the 'All' collection tree
+col = root.get_collection('/Projects/Team One')  # raises ModuleNotFoundError if missing
+col = root.get_or_create_collection('/Projects/Team One/P 123')  # creates + saves the last level only
+sub = col.get_collection('P 123')                # relative to col; './' and '..' do NOT work
+for c in root.walk():                            # every collection in the tree, parent before children
+    print(c.label, c.get_path())                 # root.sync_root.walk() for shared ones; max_depth=1 = children only
+# c.name, c.get_name() and c.get_label() are read-only aliases of c.label
+
+sample = instance.get_sample(12)                 # also get_reaction / get_wellplate / get_research_plan
+elem = instance.get_generic_by_label('Device', 3)   # generic element by label (or get_generic_by_name)
+
+for s in col.get_samples(per_page=50):           # get_reactions, get_wellplates, get_research_plans,
+    print(s.id, s.short_label, s.name)           # get_generics_by_label(label), get_generics_by_name(name)
+```
+
+`get_samples()` does not list samples that are only reactants or solvents of a reaction (server behavior);
+reach them via `reaction.reactants` / `reaction.solvents`. `len(es)` is the total on the server; the server
+allows at most 100 per page, iteration loads all pages.
+
+Listing and search results are partial. `id`, `name`, `short_label` and `json_data` come from the
+listing; the first access to `properties`, `segments`, `analyses`, `attachments` (or `molecule`, `wells`,
+`workflow`) loads the full element - one request each. So iterate cheaply over labels, and expect a
+request per element once you touch data.
+
+Search (samples and reactions):
+
+```python
+from chemotion_api.search.utils import EnumMatch, EnumConnector
+hits = (instance.search_sample()
+        .add_search_condition(EnumMatch.LIKE, EnumConnector.OR, name='Ethanol', cas='64-17-5')
+        .find_max(20).request())
+# search_reaction() fields: name, short_label, status, conditions, reaction_type, temperature_in_c,
+# duration_in_sec, private_note
+```
+
+## Create things
+
+All `new_*` methods return an unsaved object; nothing exists on the server until `save()`.
+Elements cannot be created in the root collection ('All'): `root` has no `new_*` methods
+(AttributeError). Create them in a real collection, e.g. `root.get_or_create_collection('My data')`.
+
+```python
+s = col.new_sample_smiles('CCO')         # molecule from SMILES (server-side lookup)
+                                         # elements/ions need brackets: '[Mg]', not 'Mg' (ValueError)
+solv = col.new_solvent('CDCl3')          # exact name from instance.get_solvent_list(); KeyError suggests names
+r = col.new_reaction(); rp = col.new_research_plan(); wp = col.new_wellplate()
+g = col.new_generic_by_label('Device')   # or new_generic(type_name)
+s.save()                                 # s.id is an int afterwards (a UUID string before)
+```
+
+Setting a molecule (`new_sample_smiles`, `s.molecule = ...`) copies its density (or a `molarity` set on the
+`Molecule`) to the sample if the sample has neither a density nor a molarity yet.
+
+## Edit and save
+
+`element.properties` is the main tab. Assign keys; then `save()`. `save(load_after_save=True)` reloads
+from the server, which you need before reading back attachments or ids of new sub-objects.
+
+### Samples
+
+```python
+from chemotion_api.elements.utils import QuantityUnit
+
+s.properties['external_label'] = 'EtOH batch 3'
+s.properties['description'] = 'Stored at 4 °C'
+s.properties['purity'] = 0.98            # fraction, 0 < purity <= 1 (not percent)
+s.properties['density'] = 0.789          # g/ml; molarity is properties['molarity']['value']
+s.set_amount(2.5, QuantityUnit.Gram)     # preferred way to set an amount
+print(s.gram, s.mol, s.liter)            # converted amount; None without an amount or when it cannot be
+                                         # converted (mol needs a molecular weight, liter a density/molarity)
+s.save()
+```
+
+- A sample has `target_amount` (planned/used) and `real_amount` (obtained). `set_amount` writes
+  `real_amount` for reaction products and `target_amount` otherwise, and clears the other one.
+- Units: `QuantityUnit.Gram` ('g'), `Mole` ('mol'), `Liter` ('l'), `Equivalent` (relative to the reaction's
+  reference material; starting materials and reactants only). Products accept g, mol (and l with
+  density/molarity). `s.allowed_quantity_units()` lists what is valid for this sample. With no unit given and
+  none stored, the first allowed unit is used.
+- `set_amount(value, unit)`: value first. A unit string must be one of 'g', 'mol', 'l', 'Equivalent'
+  (case insensitive); 'gram', 'eq', 'mg', 'mmol', 'ppm' raise ValueError, so convert to g/mol/l yourself.
+  There is no `QuantityUnit.Ppm`; ppm is only the concentration of a gas product (see Gas-phase reactions).
+- `s.molecule` is a dict-like `Molecule`: `s.molecule['molecular_weight']` or `s.molecule.molecular_weight`
+  (read-only); keys: `molecular_weight`, `sum_formular`, `cano_smiles`, `inchikey`, ...
+- `s.split()` and `s.copy()` save the original first, then return an unsaved new sample.
+
+### Reactions
+
+```python
+r = instance.get_reaction(5)
+r.starting_materials.append(instance.get_sample(12))   # appends a SPLIT (saves the original first)
+r.reactants.append(instance.get_sample(13))            # split, short label 'reactant'
+r.products.append(instance.get_sample(14))             # appends a COPY
+r.solvents.append(col.new_solvent('Toluene'))          # solvents are added as they are
+# r.starting_materials.append_no_split(sample) adds the sample itself (no split, no pre-saving);
+# like append it sets reaction, role and position and keeps/initializes the amount.
+# A sample the reaction already holds (any role, same id) raises ValueError; remove it first to move it.
+
+r.reference_sample = r.starting_materials[0]   # equivalents and yields are relative to it
+r.reactants[0].set_amount(1.5, QuantityUnit.Equivalent)
+r.products[0].set_amount(0.0015, QuantityUnit.Mole)   # real amount; the yield follows from the reference
+r.properties['temperature'].add_time_point(0, 30, 0, 80)   # h, min, s, value in valueUnit (°C)
+r.properties['status'] = 'Running'      # '', Planned, Running, Done, Analyses Pending, Successful, Not Successful
+r.properties['purification'] = ['TLC', 'Filtration']   # unknown values are dropped silently
+r.properties['description'] = 'Plain text is converted to Quill.js'
+r.properties['vessel_size'] = {'amount': 50, 'unit': 'ml'}
+r.save()                                # recomputes equivalents and yields from the amounts
+```
+
+The material lists are also `r.properties['starting_materials']` etc. Unknown status values are ignored
+on save, so check spelling.
+
+A sample's place in the reaction (`reference`, `equivalent`, `coefficient`, `position`, `waste`,
+`show_label`, the gas fields) is stored only by `r.save()`. Change it on the reaction's own material
+(`r.starting_materials[0].properties['coefficient'] = 2; r.save()`). On a sample loaded by itself, setting
+such a field raises `ValueError`, and `sample.save()` refuses while such a change is pending.
+A saved sample's `short_label` and a reaction's `rinchi_string` / `rinchi_web_key` cannot be set (`ValueError`).
+
+### Gas-phase reactions
+
+```python
+from chemotion_api.elements.utils import GasType
+
+r.gas_schema = True                                   # first; no save needed before setting gas types
+r.starting_materials[0].set_gas_type(GasType.FEEDSTOCK)
+r.products[0].set_gas_type(GasType.GAS)
+gp = r.products[0].properties['gas_phase_data']       # GasPhaseObj of the gas product
+gp.ppm = 9222                                         # concentration in ppm
+gp.time_in_h = 12.5
+gp.temperature_in_k = 325.65
+r.save()
+```
+
+- Set gas types on the materials of the reaction (`r.starting_materials[0]`, ...); a sample that is not part
+  of a reaction cannot have a gas type.
+- FEEDSTOCK and CATALYST only for starting materials/reactants (CATALYST needs a feedstock first), GAS only
+  for products. A reaction has at most one feedstock and one catalyst.
+- The allowed units change with the gas type, re-read `allowed_quantity_units()`: a FEEDSTOCK takes l, mol,
+  Equivalent; a GAS product takes g only (plus l with density/molarity), no mol.
+
+### Reaction variations (Chemotion >= 3.1)
+
+```python
+v = r.variations.add_new()                         # starts with the reaction's current amounts
+v.properties['temperature']['value'] = 60          # {'value', 'unit': '°C'}; duration unit 'Second(s)'
+v.notes = 'run 2'
+v.starting_materials[0].set_quantity(2, QuantityUnit.Gram)
+v.reactants[0].set_equivalent(1.5)                 # not for the reference material
+v.products[0].set_yield(85)                        # percent
+v.solvents[0].set_quantity(0.01, QuantityUnit.Liter)
+v.segments['Electrochemistry']['Cell']['Electrode type'] = 'disk'
+v.link_analyses(r.analyses.by_name('HPLC 2'))      # analysis must already be saved
+r.save()
+r.variations.remove(r.variations[-1]); r.save()
+```
+
+Mixtures (`sample.is_mixture`) cannot be quantified in variations (NotImplementedError).
+
+### Research plans
+
+```python
+rp.add_richtext('Plain text')
+rt = rp.add_richtext(); rt.add_text('Title\n', header=rt.HeaderType.H1).add_text('bold', bold=True)
+t = rp.add_table(); a, b = t.add_columns('Name', 'Yield'); t.add_row('Run 1', **{b: 85})
+rp.add_image('./setup.png')        # uploaded on save
+rp.save()
+# rp.body: list of entries; RichText / Table objects, sample/reaction entries hold Sample/Reaction objects
+```
+
+### Wellplates
+
+`wp.wells[col][row]` with col 0-11 and row 'A'-'H'; assigning a sample stores a split of it.
+Caution: parsing a wellplate currently splits (and saves) every well sample, so avoid loading and
+re-saving wellplates in bulk until that is fixed.
+
+### Generic elements (LabIMotion)
+
+```python
+g = instance.get_generic_by_label('Device', 3)
+g.properties['General']['Serial number'] = 'X-12'   # properties[layer label][field label]
+g.label, g.klass_name, g.klass_version          # 'Device', 'dev', '1.0' (the template)
+opt = next(o for o in g.wf_next_options() if o['wf_idx'] == 0 and o['layer_label'] == 'Calibration')
+key = g.wf_next(**opt)                          # returns the new layer's key in g.properties
+g.properties[key]['Result'] = 'ok'
+g.wf_layer(0, 'Calibration')['Result'] = 'ok'   # same layer, addressed by workflow and label/key
+g.wf_add_layer('Calibration')  # add a template layer directly (returns its properties key)
+g.save()
+```
+
+A layer used twice gets a suffix from its layer key (`three.1` -> `properties['Nr 3.1']`), stable across
+reloads; `g.wf_workflows()` lists each workflow's layers with `key`, `label` and `properties_key`.
+Templates: `instance.generic_manager().get_element('dev', version='1.0')` (also `label=`; reloads every call).
+New type: `gm.create_new_element('Micro Biology', 'bug', prefix='MB')` returns a released, active klass; add
+`k.properties.add_new_layer(...).add_field(FieldType.TEXT, 'Strain')`, then `k.save(SaveActionType.MINOR)` (see api.md §10).
+Ontology terms on fields: `field.ontology = 'CHMO:0000593'` (or `add_field(..., ontology=...)`); search with
+`gm.search_ontology_terms('nmr')`; read on elements with `g.field(layer, field).ontology`.
+
+## Segments (extra tabs, all element types)
+
+`element.segments[segment][layer][field]` using the labels shown in Chemotion (duplicates get `.1`, `.2`).
+`element.segments.available()` lists the generic segments of the element type.
+
+```python
+cell = s.segments.get('Electrochemistry')['Cell']   # .get() ADDS a missing segment;
+                                                     # s.segments['X'] is None if not added yet
+s.segments.field_type('Electrochemistry', 'Cell', 'Electrode type')   # 'select'
+s.segments.options('Electrochemistry', 'Cell', 'Electrode type')      # [{'key', 'label'}]
+s.segments.units('Electrochemistry', 'Cell', 'Temperature')           # ['C', 'F', 'K']
+cell['Electrode type'] = 'disk'                    # select: key or label (stored as key)
+cell['Temperature'] = {'value': 25, 'unit': 'C'}   # system-defined; a bare number gets the default unit
+cell['Cycles'] = 3                                 # integer
+s.save()                                           # invalid changed values raise ValueError here
+```
+
+`segments['Properties']` and `segments['Analyses']` are the same objects as `properties` / `analyses`.
+
+## Analyses, datasets, attachments
+
+```python
+ana = s.analyses.add_analyses('NMR')            # name; dict keys: name, description, kind, status, ...
+ana['description'] = '1H NMR in CDCl3'
+ds = ana.add_dataset('./nmr.zip')               # uploaded on save; metadata filled by a converter profile
+s.save()
+
+for ana in s.analyses:
+    for ds in ana.datasets:                     # ATTRIBUTE, not ana['datasets']
+        print(ds.name, ds.id)                   # dataset dict = metadata only; name/id are attributes
+# Analyses and Attachment keys work as attributes too: ana.name == ana['name'], att.filename
+        for att in ds.attachments or []:
+            att.save_file('./out')
+
+s.attachments.add_file('./report.pdf')          # element attachments
+s.save(load_after_save=True)                    # reload, otherwise the new file can't be found
+s.attachments.load_attachment(filename='report.pdf').save_file('./out')   # basename, not path
+```
+
+`s.attachments` can be None for elements that have no attachment container (e.g. some generic ones).
+Converter profiles: `pm = instance.get_profile_manager(); pm.profiles` (property), `pm.get_profile(id)`,
+`pm.new_profile_from_file(path).save()`, `profile.delete()`.
+
+## Collections and sharing
+
+Collection tree changes (`add_collection`, `move`, `delete`) are local until `root.save()`
+(`get_or_create_collection` saves itself). Shared-with-me collections are under `root.sync_root` and
+cannot be moved, deleted or extended.
+
+```python
+from chemotion_api.collection import CollectionSharePermission as P
+users = instance.find_user_by_name('Smith')                  # top 3 matches
+col.share(P.ReadElements, *users, detail_level=10)            # sent immediately; 0-10 per element type
+col.get_shares(); col.unshare(*users)                         # unshare() refuses an empty user list
+shared.take_ownership()                                       # accept a P.PassOwnership offer (recipient side)
+col.metadata() / col.save_metadata({'title': ..., 'creators': [...]})   # DataCite fields
+```
+
+v4 renumbered the permission levels (`ReadElements`, `EditElements`, `AddElements`, `RemoveElements`,
+`ManageShares`, `PassOwnership`); always use the names, never numbers.
+
+Moving elements between collections is sent immediately (no `root.save()`):
+
+```python
+src.move_elements(dest, sample, reaction)   # not from root ('All'): use assign_elements there
+root.assign_elements(dest, sample)          # sample is now in both; same element, not a copy
+dest.remove_elements(sample)                # stays in 'All'; nothing is deleted
+```
+
+## Deleting (ask the user first)
+
+```python
+sample.delete()                          # DELETE /ui_state like the UI; True once it is really gone
+col.delete_elements(s1, r1)              # several at once; returns the elements the server kept
+reaction.delete_analysis(analysis)       # immediate, files cannot be restored
+```
+v4 withdraws elements from your collections and destroys only those left in none, so an element still
+bound to a reaction or shared elsewhere survives. Templates, users, groups and devices need
+`confirm=<label or abbreviation>`; there is no "delete all".
+
+## Comments, notes, versions, literature, labels
+
+```python
+el.comments(); el.add_comment('text', section='properties')
+el.private_note(); el.set_private_note('only for me')
+for v in el.versions(): v.changes; v.revert()             # field-level history
+el.references(); el.add_reference(doi='10.1000/x'); col.references(); instance.doi_metadata(doi)
+el.properties['user_labels'] = [label.id]; el.save()              # label = instance.save_user_label(...)
+```
+
+## More element types
+
+```python
+screen = col.new_screen(); screen.wellplate_ids.append(plate.id); screen.save()   # plate must be saved
+cl = col.new_cell_line('HeLa', 'ATCC'); cl.properties['passage'] = 3; cl.save()   # cl.material: shared
+dev = col.new_device_description(); dev.properties['vendor_company_name'] = 'Bruker'; dev.save()
+sb = col.new_sbmm_sample('P61626'); sb.save()     # from a UniProt accession; sb.macromolecule is read-only
+tpl = instance.new_vessel_template('Flask 250', volume_amount=250, volume_unit='ml').save()
+col.new_vessel(tpl); col.new_vessels(tpl, 10, base_name='rack')     # vessels are saved immediately
+```
+`col.get_screens() / get_cell_lines() / get_device_descriptions() / get_sbmm_samples() / get_vessels()`,
+`instance.get_screen(id)` etc. Splits: `col.split_samples(...)` (linked subsamples),
+`split_wellplates`, `split_device_descriptions`, `split_sbmm_samples`, `split_generic_elements`
+(cell lines have no server-side split in this client).
+`Sample.split()` alone builds an *unlinked* copy unless it is saved inside a reaction/wellplate.
+
+## Molecules and structure search
+
+```python
+mm = instance.molecule(); mol = mm.create_molecule_by_molfile(molfile)   # raises for unreadable molfiles
+col.new_sample_molfile(molfile); mm.load_cas(mol['inchikey']); mm.lookup_cas('64-17-5')
+res = instance.search_structure().substructure('c1ccccc1O').find_max(50).request()
+res.samples; res.total('reaction')
+```
+
+## Data in and out
+
+```python
+col.export_zip('col.zip'); instance.import_zip('col.zip')      # waits for the background job
+col.import_samples('samples.sdf')                                # SDF/MOL/CSV/XLSX
+col.export_elements('table.xlsx', s1, r1); col.export_reaction_smiles('rxn.csv', r1)
+archive = instance.create_report(r1, s1, file_name='Weekly'); archive.download('weekly.docx')
+reaction.report_docx('r.docx'); wellplate.import_spreadsheet('plate.xlsx')
+instance.inbox.assign(att, sample)                               # inbox file -> new analysis
+el.save_analyses()                                               # analyses only, not the element
+```
+Collection export/import, sample import and reports run as server jobs; the methods poll until done
+(`timeout=`). Gate transfer: `col.register_gate(url, token)`, `col.transmit(url)` (target is required).
+
+## Lab data
+
+```python
+chem = sample.get_chemical(); chem.cas = '64-17-5'; chem.data['status'] = 'Available'; chem.save()
+sample.attach_safety_sheet('sds.pdf', 'Merck', 'merckProductInfo', {'productNumber': 'E7023'})
+plan.create_measurements([{'sample': s, 'description': 'yield', 'value': 87.5, 'unit': '%'}])
+att.load_annotation(); att.save_annotation(svg)
+instance.spectra().save(jcamp_attachment, peaks_str=...)        # needs the ELN's ChemSpectra service
+instance.text_templates().predefined('esi').ops                  # Quill delta snippets
+```
+
+## LabIMotion admin and administration
+
+```python
+gm = instance.generic_manager()
+klass.download('t.json'); klass.revisions(); klass.delete(confirm=klass.label)
+gm.hub_templates(ElementType.SEGMENT); gm.import_hub_template(identifier, ElementType.SEGMENT)
+el.variations(); el.save_variations(rows); el.create_mtt_request(plate)
+admin = Instance(url).login(admin_user, pw).get_user()        # an Admin
+admin.find_users('Smith'); admin.update_user(u, account_active=False); admin.reset_password(u)
+admin.create_device('NMR', 'NMR1'); admin.jobs(); admin.disk_usage(); admin.matrices()
+instance.profile(); instance.set_short_label_counter('samples', 100); instance.create_api_token(otp)
+```
+
+## Show the user
+
+`element.open()` opens the saved element in the browser (the user must be logged in there);
+`element.url()` returns the link - put it in your answer so the user can check the result.
+
+## Pitfalls checklist
+
+- Nothing is persisted without `save()`; check `element.id` is an int afterwards.
+- Purity is a fraction (0-1), yields in variations are percent, equivalents are plain factors.
+- Appending to starting materials/reactants/products saves the source sample and creates a new sample.
+  Use `append_no_split` if you must not create splits.
+- A sample can be in a reaction only once: adding one it already holds, in any role, raises `ValueError`.
+  A sample of another reaction is accepted, but on save the ELN gives this reaction a split with a new id.
+- Segment and property names are the human-readable labels, case-sensitive.
+- `ElementSet` (listings) cannot be indexed negatively; with an IRI filter it can only be iterated.
+- Most methods added for v4 act **immediately** (no `save()`): moving, sharing, deleting, splitting,
+  comments, references, labels, chemicals, measurements, vessels, exports and admin calls.
+- Background jobs (export, import, reports) have no job id; the client waits for the matching
+  notification. Re-running one creates a second job.
+- `ValueError` from `save()` usually means a segment value does not fit its field; the message names the field.
+- Changes the ELN would drop without an error are refused with `ValueError`: reaction-link fields
+  (`reference`, `coefficient`, `waste`, ...) saved through `sample.save()` instead of `reaction.save()`, a
+  saved sample's `short_label`, a reaction's RInChI.
+- `requests.exceptions.RequestException` with `401` means the element is not visible to this user.
+  Load/save/list failures raise `chemotion_api.connection.ChemotionRequestError` (a `RequestException`;
+  `ChemotionServerError` for 5xx) with `status_code`, `url` and `context`, e.g. `saving sample 12`.
+- A refusal the server reports inside a success reply (`{"errors": ...}`, `{"error": ...}`,
+  `{"success": false}`) raises `chemotion_api.connection.ChemotionRejectedError` (also a `ConnectionError`
+  and a `ValueError`): the server's reason is in the message, the decoded reply in `.body`.
+
+
+===== skills/chemotion-api/references/api.md =====
+# chemotion_api reference
+
+Signatures of the public API (generated from the code, internal helpers omitted) plus the property keys of
+each element type. Read the section you need; SKILL.md has the workflows.
+
+## Contents
+
+1. Instance
+2. Collections
+3. ElementSet (listings)
+4. Common element API
+5. Sample (+ property keys)
+6. Reaction (+ property keys), MaterialList, Temperature
+7. Variations
+8. Research plan, Table, RichText
+9. Wellplate
+10. Generic elements
+11. Segments
+12. Analyses, Dataset, Attachments
+13. Converter profiles
+14. Search
+15. Enums and units
+16. Exceptions
+17. Collections: v4 additions (delete, split, import/export, reports, labels)
+18. Element additions (comments, notes, versions, literature, analyses, chemicals, measurements)
+19. More element types: Screen, CellLine, DeviceDescription, SbmmSample, vessels
+20. Molecules, components and structure search
+21. Inbox, attachments, annotations, spectra
+22. Reports and table exports
+23. LabIMotion additions (templates, hub, variations, MTT)
+24. Account, profile, text templates, SciFinder-n, compute
+25. Administration (`Admin`)
+
+## 1. Instance (`from chemotion_api import Instance`)
+
+```
+Instance(host_url: str | Connection, verify_ssl: bool = True, username=None, password=None, token=None)  # username/password deprecated
+  .test_connection() -> Instance              # ConnectionError if the server is not reachable
+  .login(user, password) -> Instance          # DEPRECATED (FutureWarning); use login_token. PermissionError
+  .login_token(jwt_token) -> Instance         # API token (chemtoken_...) or JWT; not checked until the next request
+  .token / .host_url                          # properties
+  .get_user() -> Person | Admin | Group | Device
+  .find_user_by_name(name) -> list[Person]    # top 3 matches
+  .get_root_collection(reload=True) -> RootCollection
+  .get_collection_by_id(collection_id) -> Collection
+  .get_collection_of_element(element) -> Collection
+  .get_sample(id) / .get_reaction(id) / .get_wellplate(id) / .get_research_plan(id)
+  .get_generic_by_name(name, id) / .get_generic_by_label(label, id)   # ValueError for an unknown or built-in type, or an id of another type
+  .get_json_ld_id(element.json_ld['@id']) -> element
+  .get_all_types() -> list[str]               # JSON-LD types (IRIs)
+  .all_element_classes                        # dict of all element types incl. generic ones
+  .search_sample() -> SampleSearcher
+  .search_reaction() -> ReactionSearcher
+  .molecule() -> MoleculeManager              # .create_molecule_by_smiles(smiles, density=0.0)
+  .get_solvent_list() -> list[str]            # names for new_solvent / SolventList.add_new_name
+  .get_profile_manager() -> ProfileManager
+  .generic_manager() -> GenericManager        # LabIMotion templates (admin work)
+  .inbox -> Inbox                             # .sorted_boxs, .unsorted_attachments, .upload(path)
+  .device_manager -> DeviceManager
+```
+
+## 2. Collections (`chemotion_api.collection`)
+
+Paths are unix-like label paths. Absolute paths start with `/`; others are relative to the collection the
+method is called on. `.` and `..` are not supported. `case_insensitive=True` ignores case.
+
+```
+AbstractCollection (RootCollection, Collection, RootSyncCollection)
+  .id / .label / .children
+  .name / .get_label() / .get_name()                  # read-only aliases of .label
+  .get_path() -> str
+  .get_root() -> RootCollection
+  .find(label=None, **attrs) -> list                  # searches this collection and descendants
+  .walk(include_self=False, max_depth=None) -> Generator   # all descendants, depth-first, parent before children
+  .get_collection(path, case_insensitive=False)       # ModuleNotFoundError if missing
+  .get_or_create_collection(path, case_insensitive=False)   # saves immediately; parents must exist
+  .get_samples(per_page=10, updated_to_date=None, updated_from_date=None, product_only=False) -> ElementSet
+  .get_reactions(...) / .get_research_plans(...) / .get_wellplates(...)
+  .get_generics_by_name(name, ...) / .get_generics_by_label(label, ...)
+  .get_elements_of_iri(element_type_iri, ...)          # iterate only, no len()/index
+  .move_elements(dest, *elements)     # sent immediately; not from the root ('All') collection
+  .assign_elements(dest, *elements)   # sent immediately; adds to dest too (same element, no duplicate)
+  .remove_elements(*elements)         # sent immediately; element stays in 'All'
+                                      # elements not in this collection are silently ignored
+
+Collection (owned) additionally
+  .new_sample() / .new_sample_smiles(smiles) / .new_solvent(name)
+  .new_reaction() / .new_research_plan() / .new_wellplate()
+  .new_generic(type_name) / .new_generic_by_label(label) / .new_element_by_iri(iri)
+  .add_collection(name)            # local until root.save()
+  .move(dest)                      # relative to the parent; local until root.save()
+  .delete()                        # local until root.save()
+  .share(CollectionSharePermission, *users_or_groups, detail_level=0..10)   # sent immediately
+  .get_shares() / .update_share(share_id, ...) / .unshare(*users, all=False)
+  .export_zip(destination) / .metadata() / .save_metadata(dict) / .take_ownership()    # see 17
+  .gate_token(origin) / .register_gate(url, token) / .check_transmission(url) / .transmit(url)
+
+RootCollection                     # no new_* methods: elements cannot be created in 'All'
+  .save()                          # sends all tree changes and reloads
+  .load_collection()               # reload; drops unsaved tree changes
+  .sync_root -> RootSyncCollection # collections shared with me (read-only tree)
+  .all                             # info of the 'All' collection
+  .move(src, dest) / .delete(src) / .add_collection(path)
+
+CollectionSharePermission: ReadElements(0), EditElements(1), AddElements(2), RemoveElements(3),
+                           ManageShares(4), PassOwnership(5)   # v4 levels; use the names
+```
+
+## 3. ElementSet (result of get_samples etc.)
+
+A list subclass loaded page by page (`per_page`). Iterating loads all pages. `es[i]` loads the page and the
+full element; `es[:5]` returns a list; negative indices raise TypeError. Elements are partial until their
+data is accessed (see SKILL.md). `len(es)` is the total number on the server (server max per_page: 100).
+Sample listings omit samples that are only reactants or solvents of a reaction (server behavior).
+
+```
+.page (get/set) / .max_page / .iter_pages() / .next_page() / .prev_page()   # setting a missing page: IndexError
+.iter_elements(start_page=1)
+```
+
+## 4. Common element API (`AbstractElement`)
+
+```
+.id                    # int once saved, UUID string before (.is_new is True)
+.name / .short_label / .element_type / .last_update
+.json_data             # raw server JSON (partial for listing elements)
+.json_ld               # {'@id': ..., '@type': ...}
+.properties            # main tab, dict-like
+.segments              # Segment (see 11)
+.analyses              # AnalysesList (see 12)
+.attachments           # Attachments or None
+.load()                # reload from the server, drops local changes
+.save(load_after_save=False)   # Wellplate.save() takes no argument
+.url(collection_id=None) -> str
+.open(collection_id=None) -> str   # opens a browser tab
+.move_to(dest, source) / .assign_to(dest, source=root of dest) / .remove_from(collection)
+```
+
+## 5. Sample (`chemotion_api.elements.sample`)
+
+```
+.molecule -> Molecule  # dict-like: molecular_weight, exact_molecular_weight, sum_formular, cano_smiles,
+                       # inchikey, inchistring, density, boiling_point, melting_point, iupac_name, ...
+                       # m['molecular_weight'] or read-only m.molecular_weight
+.set_amount(value, unit=None)          # unit: QuantityUnit or 'g'/'mol'/'l'/'Equivalent'
+.get_amount() -> {'value', 'unit'}     # real_amount for products, else target_amount
+.allowed_quantity_units() -> list[QuantityUnit]
+.gram / .mol / .liter                  # converted amount; None without an amount or if not convertible
+.equivalent / .reference / .is_mixture
+.reaction / .role_in_reaction          # 'starting_materials' | 'reactants' | 'products' | 'solvents' |
+                                       # 'purification_solvents' | None
+.gas_type / .set_gas_type(GasType) / .allowed_gas_types()   # gas-phase reactions only
+.split() / .copy()                     # save self, return unsaved new Sample
+.toggle_decoupled()
+.load_image() -> Response              # SVG of the structure in .content
+```
+
+Property keys (`sample.properties[...]`):
+
+| key | type | notes |
+|---|---|---|
+| name, short_label | str | read-only |
+| external_label, description, location, reaction_description | str | |
+| target_amount, real_amount | {'value': float, 'unit': 'g'/'l'/'mol'} | prefer set_amount |
+| molarity | {'value': float, 'unit': 'M'} | |
+| purity | float | 0 < purity <= 1 |
+| density | float | g/ml |
+| boiling_point_lowerbound/upperbound, melting_point_lowerbound/upperbound | int | |
+| stereo | {'abs': ..., 'rel': ...} | |
+| solvent | SolventList | .add_new_name(name), .add_new_smiles(smiles); entries {label, smiles, inchikey, ratio} |
+| is_top_secret, is_restricted, decoupled, waste, inventory_sample, show_label | bool | |
+| reference | bool | reference material of its reaction; this and the other reaction-link fields (equivalent, coefficient, position, waste, show_label, gas_*) are saved only by reaction.save() |
+| equivalent | float | setting it sets the amount from the reference |
+| coefficient | int | > 0 |
+| user_labels | list | |
+| metrics, sum_formula | str | |
+| molecular_mass | float | |
+| gas_type | GasType | |
+| gas_phase_data | GasPhaseObj | gas products only: time, temperature, turnover_number, part_per_million, turnover_frequency |
+| position | int | position in the reaction material list |
+
+## 6. Reaction (`chemotion_api.elements.reaction`)
+
+```
+.starting_materials / .reactants / .products / .solvents / .purification_solvents -> MaterialList
+.reference_sample (get/set)       # default: first starting material or reactant
+.variations -> Variations
+.gas_schema (get/set bool)        # gas-phase reaction
+.get_feedstock() / .get_catalyst()
+.update_equivalent() / .update_amount()
+.load_image() -> Response
+
+MaterialList (list of Sample)
+  .append(sample)          # starting_materials/reactants: split; products: copy; solvents: as is
+  .append_no_split(sample) # adds the sample itself; sets reaction, role, position, amount like append
+                           # any add raises ValueError if the reaction already holds the sample (any role)
+
+Temperature (properties['temperature'], a dict)
+  .add_time_point(hour, minute, second, temperature)
+  keys: data [{'time': 'hh:mm:ss', 'value': '80'}], userText, valueUnit ('°C' | '°F' | 'K')
+```
+
+Property keys (`reaction.properties[...]`):
+
+| key | type | notes |
+|---|---|---|
+| starting_materials, reactants, products, solvents, purification_solvents | MaterialList | |
+| name, conditions, duration | str | |
+| description, observation | str or Quill delta {'ops': [...]} | plain strings are converted |
+| status | str | '', Planned, Running, Done, Analyses Pending, Successful, Not Successful |
+| purification | list[str] | Flash-Chromatography, TLC, HPLC, Extraction, Distillation, Dialysis, Filtration, Sublimation, Crystallisation, Recrystallisation, Precipitation |
+| temperature | Temperature | |
+| timestamp_start, timestamp_stop | datetime | duration is computed on save |
+| vessel_size | {'amount': float, 'unit': 'l'/'ml'} | |
+| dangerous_products | list | |
+| gaseous | bool | same as gas_schema |
+| rxno, rinchi_long_key, rinchi_short_key, rinchi_web_key | str | read-only |
+
+## 7. Variations
+
+```
+Variations (reaction.variations, list-like, sorted by id)
+  .add_new() -> Variation       # amounts from the reaction materials
+  .remove(variation) -> bool
+
+Variation
+  .properties   # {'temperature': {'value', 'unit': '°C'}, 'duration': {'value', 'unit': 'Second(s)'}}
+  .notes        # str
+  .starting_materials / .reactants / .products / .solvents -> list[SampleVariation]
+  .segments     # {segment: {layer: {field: value}}}; text, integer, select, system-defined fields only
+  .link_analyses(analyses) / .get_analyses()
+
+SampleVariation
+  .sample / .is_ref / .potential_units()
+  .set_quantity(value, unit)    # solvents: always liter; liter needs molarity; Yield in percent
+  .set_equivalent(value)        # starting materials/reactants, not the reference
+  .set_yield(percent)           # products
+  .get_amount() (mol) / .get_mass() (g) / .get_volume() (l) / .get_equivalent_or_yield() (fraction)
+```
+
+Variation segment values: select = option key or label; system-defined = {'value', 'unit'} or a number in
+the default unit (a field without default unit cannot get a value); every variation gets the same segments.
+
+## 8. Research plan (`chemotion_api.elements.research_plan`)
+
+```
+.body -> list            # entries with id/type/value; RichText and Table objects for text/tables
+.add_richtext(text=None, at_idx=None) -> RichText
+.add_table(at_idx=None) -> Table
+.add_image(image_path, at_idx=None) -> dict   # png/jpg/jpeg/tiff/bmp/gif; uploaded on save
+
+RichText.add_text(text, bold=None, underline=None, italic=None, list=None ('bullet'|'ordered'),
+                  header=None (RichText.HeaderType.H1/H2/H3)) -> RichText   # lists/headers: end with '\n'
+Table.add_columns(*labels) -> list[col_id]    # ids are letters 'a'..'z'
+Table.add_row(*values, **{col_id: value}) -> Table
+Table.set_entry(row, col_id, value) / .get_column(col_id) / .column_id_by_label(label) / len(table)
+```
+
+## 9. Wellplate
+
+`wp.wells` is a list of 12 columns (0-11), each a mapping 'A'-'H' -> Sample | None; assigning a sample stores
+a split. `wp.properties`: name, description. `wp.save()` saves and reloads.
+
+## 10. Generic elements
+
+```
+properties[layer label][field label] = value   # a layer used twice: 'Nr 3.1' (suffix of its key three.1)
+.label / .klass_name / .klass_version / .klass_prefix   # of the template: 'Workflow', 'wrk', '2.0', 'WRK'
+.short_label                                     # set by the server on first save: '<initials>-<prefix><n>'
+.layers_without_fields() -> [properties keys]    # e.g. ['Fixed'] - such layers are {} in properties
+.wf_tree() / .wf_current_workflow() / .wf_next_options(flat=True)
+  # option: layer_id, wf_id, wf_idx, layer_key, layer_label, source_key (+ source_layer when flat)
+.wf_next(layer_id=None, wf_idx=0, wf_id=None) -> properties key   # ValueError on unknown wf / wrong layer
+.wf_add_layer(layer_label, pos=None) -> properties key
+.wf_workflows() -> [{'wf_id', 'wf_idx', 'layers': [{'key', 'label', 'properties_key'}]}]
+.wf_layer(wf_idx | wf_id, label | key) -> the layer's fields (same object as in properties)
+.field(layer, field) -> SegmentField   # template of a field: .type, .ontology, .options(), ...
+```
+
+Templates (`instance.generic_manager()`): `get_element(name=None, *, label=None, version=None, **attrs)`,
+`get_segment(label=None, *, version=None, **attrs)`, `get_dataset(...)` - loaded from the server on every call;
+KeyError lists the matches/available templates. The template class is `labImotion.GenericElementKlass`
+(old name `labImotion.GenericElement` still works), not the element class `elements.GenericElement`.
+
+Authoring a template (admin; `FieldType` from `labImotion.items.fields`, `SaveActionType` from `labImotion.items.options`):
+
+```
+k = gm.create_new_element(label, icon_name, description='', prefix='', name='', release=True, activate=True)
+    # -> the new GenericElementKlass; release/activate make it usable right away (empty v0.1)
+layer = k.properties.add_new_layer(label, key='', idx=-1)          # key generated from label; ValueError if taken
+layer.add_field(FieldType.X, label, field='', idx=-1, options=None) # options=[...] only for SELECT
+k.properties.add_select_option(key, values) -> key                 # shared list; link via field.option_layers = key
+field.label / .required / .default                                 # stored in the template
+field.ontology = 'CHMO:0000593' | term_dict | None                 # ontology term; ID looked up online (TIB TS)
+layer.add_field(FieldType.TEXT, 'NMR method', ontology='CHMO:0000593')
+gm.search_ontology_terms('nmr', rows=30) -> [term]                 # same search as the template designer
+gm.get_ontology_term(obo_id | short_form | iri) -> term            # KeyError if unknown
+    # term: {'iri', 'label', 'obo_id', 'short_form', 'ontology_prefix', 'ontology_name', 'description', 'id', 'type'}
+k.klass_prefix / k.desc / k.label / k.icon_name
+k.save(SaveActionType.MINOR)   # release (new elements use the latest release); DRAFT only stores
+k.is_active = True / False
+instance.element_manager.reload()   # drop cached types (new_generic_by_label also reloads on a miss)
+```
+
+Elements address fields by the labels of *their* template version; unknown layer/field names raise
+ValueError on save. `load_all_elements()` skips invalid templates with a warning (`load_all(con, strict=True)`).
+
+## 11. Segments (`element.segments`)
+
+```
+segments[name]             # None if the element doesn't have it
+segments.available()       # labels of all generic segments for this element type
+segments.get(name)         # adds it with template defaults
+segments.field(seg, layer, field) -> SegmentField   # .type, .ontology, .options(), .units(), .default_unit
+segments.field_type(seg, layer, field) / .options(...) / .units(...)
+```
+
+Field values: select = option key (label accepted), system-defined = {'value', 'unit'} (bare number gets the
+default unit), integer = whole number, text/others as is. Changed values are validated on save
+(ValueError naming the field); unchanged server values are never rejected.
+
+## 12. Analyses, Dataset, Attachments
+
+```
+AnalysesList (element.analyses)
+  .by_name(name) / .by_id(id)          # StopIteration if missing
+  .add_analyses(name='New') -> Analyses
+Analyses (dict: name, description, report, status, kind, content; keys readable/writable as attributes)
+  .id / .type / .datasets (list attribute) / .is_new
+  .add_dataset(file_path) -> Dataset   # uploaded on save
+  .dataset_by_name(name) / .preview_image() -> bytes | None
+Dataset (dict = metadata set {layer: {field: value}})
+  .id / .name / .description / .json_data / .attachments
+  .write_zip(destination='') / .write_data_set_xlsx(destination='')   # return file path
+Attachments (element.attachments; iterable, indexable)
+  .add_file(path) -> dict              # uploaded on save
+  .load_attachment(id=None, identifier=None, filename=None) -> Attachment   # saved files only
+Attachment (dict: id, identifier, filename, ...; keys readable as attributes, att.filename)
+  .load_file() -> bytes / .save_file(directory='.') -> path
+```
+
+## 13. Converter profiles
+
+```
+pm = instance.get_profile_manager()
+pm.profiles                      # property, list[Profile], cached
+pm.get_profile(id) -> Profile | None
+pm.new_profile_from_file(path) -> Profile | None   # new id if it already exists; not saved
+Profile: id, title, description, identifiers, tables, data, matchTables, ols
+  .save() (create or update) / .delete() / .to_dict() / .to_json()
+```
+
+## 14. Search
+
+```
+instance.search_sample().add_search_condition(match, connector, name=, short_label=, external_label=,
+    inventory_label=, cas=, private_note=)
+instance.search_reaction().add_search_condition(match, connector, name=, short_label=, status=,
+    conditions=, reaction_type=, temperature_in_c=, duration_in_sec=, private_note=)
+  .in_collection(collection_id) / .find_max(n)   # default 15 results
+  .request() -> ElementSet
+EnumMatch: LIKE, NOT_LIKE (case insensitive), LESS_THAN, BIGGER_THAN, EXACT
+EnumConnector: AND, OR   # links a condition to the ones before it
+```
+
+## 15. Enums and units (`chemotion_api.elements.utils`)
+
+```
+QuantityUnit: Liter 'l', Mole 'mol', Gram 'g', Equivalent 'Equivalent', Yield 'Yield'
+GasType: OFF, GAS, CATALYST, FEEDSTOCK
+```
+
+## 16. Exceptions
+
+| exception | typical cause |
+|---|---|
+| ConnectionError | server unreachable, collection/profile request failed, share failed |
+| PermissionError | login failed; SciFinder-n token missing or expired |
+| chemotion_api.connection.TokenExpiredError | PermissionError raised before sending: the login token has expired |
+| requests.exceptions.RequestException | element load/save failed; 401 = not visible to this user |
+| chemotion_api.connection.ChemotionRequestError | subclass raised by element load/save/list; .status_code, .url, .context, .snippet |
+| chemotion_api.connection.ChemotionServerError | the same for 5xx (server bug, often triggered by invalid data) |
+| chemotion_api.connection.ChemotionRejectedError | success status, but the body reports a refusal (`{"errors": ...}`, `{"error": ...}`, `{"success": false}`); also ConnectionError and ValueError; .body is the decoded reply |
+| IndexError | `ElementSet.page` set to a page that does not exist |
+| ModuleNotFoundError | collection path does not exist |
+| ValueError | invalid segment value, unit not allowed, unknown generic type/label, generic id of another type, equivalents without a reference amount in mol, unsaved element in url()/open(), SMILES the server cannot resolve ('Mg' instead of '[Mg]'), a change the ELN would drop (reaction-link field via sample.save(), saved sample's short_label, reaction RInChI) |
+| KeyError | sample has no reaction; unknown segment/field name |
+| StopIteration | by_name/by_id/dataset_by_name found nothing |
+| NotImplementedError | quantities of mixtures in variations |
+
+## 17. Collections: v4 additions
+
+All of these act immediately.
+
+```
+AbstractCollection
+  .delete_elements(*elements, delete_subsamples=False) -> list   # the elements the server kept
+  .split_samples(*samples) -> list[Sample]                       # linked subsamples <label>-<n>
+  .split_wellplates(*plates) / .create_wellplates(*names)
+  .split_device_descriptions(*devs) / .split_sbmm_samples(*s) / .split_generic_elements(*els)
+  .import_samples(path, as_chemicals=False, wait=True, timeout=300) -> ImportResult   # .sdf .mol .csv .xlsx
+  .export_elements(path, *elements, file_format='xlsx'|'sdf', columns=None) -> path | None
+  .export_reaction_smiles(path, *reactions, notation='SM>R>P') -> path | None
+  .references() -> {'collection'|'sample'|'reaction'|'research_plan': [Reference]}
+  .get_screens() / .get_cell_lines() / .get_device_descriptions() / .get_sbmm_samples()   # ElementSet
+  .get_vessels() / .new_vessel(template, **fields) / .new_vessels(template, count, base_name=None)
+  .inventory_label() -> InventoryLabel | None
+Collection
+  .export_zip(destination, timeout=900) -> path   # the ELN's native ZIP, via a background job
+  .metadata() -> dict | None / .save_metadata(dict)              # DataCite fields
+  .take_ownership() -> dict                 # accept a PassOwnership share
+  .gate_token(origin) / .register_gate(destination, token)
+  .check_transmission(target) / .transmit(target, wait=True)     # target required (server default = public repo)
+Instance
+  .import_zip(path) -> list[Collection]
+```
+
+## 18. Element additions (`AbstractElement`)
+
+```
+.delete(delete_subsamples=False) -> bool    # True when the record is really gone
+.comments() / .add_comment(content, section=None)
+.private_note() / .set_private_note(text) / .delete_private_note()
+.versions() -> list[Version]                # Version.changes, Version.revert(fields=None)
+.references() / .add_reference(doi=, url=, title=, isbn=, bibtex=, litype='citedOwn')
+.remove_reference(ref) / .set_reference_type(ref, litype)
+.save_analyses()                            # only the analyses (PUT /containers/container)
+.delete_analysis(analysis)                  # immediate, files gone
+.linked_research_plans() -> [{'id', 'name'}]      # samples and reactions
+Sample.get_chemical() -> Chemical                                   # .exists / .save(); .cas, .data
+Sample.attach_safety_sheet(pdf, vendor_name, vendor_product, vendor_info=None, cas=None) -> Chemical
+Sample.save_vendor_safety_sheet(chemical, vendor_product) -> Chemical
+.measurements(hierarchy=True, source=None) -> list[Measurement]      # samples
+.create_measurements([{'sample', 'description', 'value', 'unit', 'metadata'?}])   # on the source element
+Sample:   .svg_path / .components() / .save_components([Component])
+Reaction: .render_scheme_svg(products_only=False) / .report_docx(path) / .export_samples_excel(path)
+Wellplate: .export_samples_excel(path) / .download_template(path) / .import_spreadsheet(path)
+ResearchPlan: .metadata() / .save_metadata(**fields) / .upload_svg(svg, is_chemdraw=False)
+```
+`chemotion_api.elements.sample.Chemical`: `data` is `chemical_data[0]`; `.safety_sheets` paths.
+
+## 19. More element types
+
+```
+Screen        col.new_screen(); links are id lists .wellplate_ids / .research_plan_ids (a save sends
+              them as the new state; [] removes every link); .wellplates / .research_plans load the
+              linked elements; properties: name, collaborator, requirements, conditions, result, description
+CellLine      col.new_cell_line(material_name, source); .material is the shared cell line material
+              (edits check who owns it); see docs/CellLineDetails.rst
+DeviceDescription  col.new_device_description(); a rejected create raises ValueError
+SbmmSample    col.new_sbmm_sample(uniprot_accession); .macromolecule is read-only
+vessels       VesselTemplate(name, vessel_type, material_type, volume_amount, ...).save()/.delete()/.vessels()
+              Vessel(name, short_label, weight_amount, ...).save()/.delete(); UUID ids
+```
+
+## 20. Molecules, components, structure search
+
+```
+instance.molecule() -> MoleculeManager
+  .create_molecule_by_molfile(molfile, decoupled=False)   # ValueError for the server's DUMMY molecule
+  .get_molecule_by_inchikey(k) / .load_cas(inchikey) / .lookup_cas(cas)
+  .get_names(mol_id) -> [MoleculeName] / .add_name(mol_id, name) -> MoleculeName
+  .render_svg(molfile) / .load_svg(mol)
+  .molecular_weight(sum_formula)
+col.new_sample_molfile(molfile)
+sample.components() / sample.save_components([Component.new(molecule, amount_mol=...)])
+instance.search_structure().substructure(smiles_or_molfile) | .similar(s, threshold=0.7)
+  .in_collection(id).find_max(n).request() -> StructureSearchResult(.samples, .reactions, .total(type))
+instance.suggestions(query, element_type='all') / instance.doi_metadata(doi)
+instance.find_sample_by_short_label(l) / find_reaction_by_short_label(l)
+```
+
+## 21. Inbox, attachments, annotations, spectra
+
+```
+instance.inbox.unlinked_attachments() / .search_samples(q) / .search_reactions(q)
+instance.inbox.assign(attachment, sample_or_reaction, variation=None) -> dataset container
+Attachment.load_image() / .load_thumbnail() / .delete() / .unlink()
+Attachment.load_annotation() -> svg / .save_annotation(svg)
+attachments.delete_attachments(con, atts) / load_thumbnails(con, atts) / load_files(con, atts)
+instance.spectra(): .save(att, **params) / .infer(att) / .regenerate(orig, generated) /
+  .regenerate_edited(edited, molfile) / .lcms_page(att, rt) / .convert(path, mass) /
+  .combine(atts, front_index) / .layouts() / .nmrium_url()          # need the ChemSpectra service
+```
+
+## 22. Reports and table exports (`chemotion_api.reports`)
+
+```
+instance.report_templates() -> [ReportTemplate]
+instance.create_report(*samples_and_reactions, template='standard', file_name=, description=,
+    sample_settings={}, reaction_settings={}, si_reaction_settings={}, page_break=True,
+    all_chemicals_in_schemes=True, image_format='png', molecule_serials={}, wait=True) -> Archive
+instance.report_archives() -> [Archive]; Archive.download(path) / .refresh() / .delete()
+REPORT_TYPES: standard, spectrum, supporting_information, supporting_information_std_rxn,
+              rxn_list_xlsx, rxn_list_csv, rxn_list_html
+```
+
+## 23. LabIMotion additions
+
+```
+klass (GenericElementKlass / GenericSegment / GenericDataset)
+  .delete(confirm=<label>) / .revisions(limit=10) / .delete_revision(rev) / .download(path)
+gm = instance.generic_manager()
+  .hub_templates(kind) / .import_hub_template(identifier, kind) / .submit_to_hub(...)
+  .published_templates(kind) / .active_element_names(generic_only=False)
+GenericElement
+  .export_docx(path) / .variations() / .save_variations(rows, layout=None)
+  .export_variations(path) / .import_variations(path) -> warnings
+  .create_mtt_request(*wellplates) -> app link / .mtt_requests() -> [MttRequest(.update/.revoke/.delete)]
+generic_element.variation_key(layer, field)   # property-cell key
+instance.ols_terms(name='chmo'|'rxno'|'bao', edited=True)
+```
+
+## 24. Account, profile, templates, SciFinder-n, compute
+
+```
+instance.profile() -> Profile(.data, display flags, .structure_templates, .save(),
+    .add_structure_template(content), .delete_structure_template(t))
+instance.ketcher_options() / .save_ketcher_options(dict)
+instance.two_factor_enabled() / .request_two_factor_change()
+instance.api_tokens() / .create_api_token(otp, name=None, expires_in_days=30) / .revoke_api_token(t, otp)
+instance.set_short_label_counter(type, value) / .set_reaction_short_label(prefix, count)
+instance.text_templates(): .predefined_names() / .predefined(name) / .personal() /
+    .create_personal(name, ops) / .update_personal(t) / .delete_personal(t) / .toolbar(type) / .set_toolbar(type, groups)
+instance.scifinder_credential() / .scifinder_search(structure, search_for, structure_type)   # provider failure: ConnectionError
+instance.simulate_nmr(mol) / .predict_products(smiles) / .predict_reactants(smiles)
+instance.compute_tasks() / .submit_compute_task(sample); ComputeTask.check() / .revoke() / .delete()
+instance.sample_tasks(status) / .create_sample_task(sample, description, n); SampleTask.add_scan_result(...)
+instance.set_inventory_label(prefix, name, counter, *cols) / .inventory_collections()
+instance.find_safety_sheets(name, molecule=None, vendor='All') / .download_safety_sheet / .extract_safety_sheet
+instance.research_plan_table_schemas() / .save_research_plan_table_schema(name, table) / .delete_...(id)
+instance.instruments(kind='all')
+```
+
+## 25. Administration (`Admin`, from `instance.get_user()` of an admin account)
+
+```
+users    .find_users(name) / .update_user(u, **fields) / .delete_user(u, confirm=abbr) / .restore_user(abbr)
+         .reset_password(u, password=None) / .two_factor_enable_link(u) / .disable_two_factor(u)
+         .set_user_rights(u, molecule_editor=, converter_admin=, generic_elements_admin=, ...)
+         .default_allocated_space() / .set_default_allocated_space(mb)
+groups   .remove_users_from_group(g, *users) / .set_group_admin(g, u, admin=True) / .delete_group(g, confirm=abbr)
+devices  .list_devices(name=None) / .get_device(d) / .create_device(name, abbr, email=None, serial_number=None) -> Device / .update_device(d, **fields)
+         .delete_device(d, confirm=abbr) / .remove_device_user(d, u) / .test_sftp(d, host, user)
+         .local_collectors() / .device_metadata(d) / .save_device_metadata(d, **f) / .sync_device_metadata(d)
+system   .disk_usage() / .jobs() / .restart_job(job) / .queue_admin_task(task) / .matrices() / .update_matrix(m, **f)
+         .save_spectra_data_types(d) / .info_support_links() / .add_/update_/delete_info_support_link(...)
+ontology .import_ols_terms(owl) / .set_ols_terms_enabled(owl_name, enable=(), disable=())
+```
+
+
+
+===== docs/Account.rst =====
+Account and profile
+===================
+
+.. code-block:: python
+
+    profile = instance.profile()
+    profile.show_external_name = True
+    profile.save()
+    instance.save_ketcher_options({'showAtomIds': True})
+    instance.set_short_label_counter('samples', 100)
+
+API tokens are long-lived credentials for scripts (``Instance(url).login_token(token)``). The ELN
+issues them only for accounts with two-factor login, against a current one-time password:
+
+.. code-block:: python
+
+    if not instance.two_factor_enabled():
+        instance.request_two_factor_change()      # the ELN emails the confirmation link
+    token = instance.create_api_token(otp='123456', name='CI', expires_in_days=90)
+
+.. autoclass:: chemotion_api.profile.Profile
+    :members:
+.. automodule:: chemotion_api.account
+    :members: ApiToken, OtpRequired, create_api_token, revoke_api_token
+.. automodule:: chemotion_api.scifinder
+    :members: ScifinderCredential, search
+
+
+===== docs/Admin.rst =====
+Administration
+==============
+
+Some operations require administrator (or device) privileges; the server returns ``401`` otherwise.
+
+Device management
+-----------------
+
+Devices are created and listed through :class:`chemotion_api.user.Admin`, which
+:meth:`chemotion_api.Instance.get_user` returns when the logged-in user is an administrator.
+
+.. code-block:: python
+
+    admin = instance.get_user()                             # an Admin, when logged in as one
+    device = admin.create_device("Device Name", "ABC")      # admin only
+    device.delete()
+
+:meth:`~chemotion_api.user.Admin.create_device` returns a typed :class:`~chemotion_api.user.Device`
+and raises when the server reports an error — note that a rejected ``name_abbreviation`` comes back
+as ``201`` with an ``errors`` body rather than as a failure status.
+
+.. warning::
+   **A device you create does not appear in** :meth:`~chemotion_api.user.Admin.fetchDevices`.
+   The two read different things on the server: creation writes a row to the ``devices`` table,
+   while ``fetchDevices()`` lists *users* whose type is ``Device`` — a separate, older concept
+   that happens to share the name. This is a server-side inconsistency, not something this client
+   can paper over; a created device is visible through ``GET /api/v1/admin_devices``.
+
+:class:`chemotion_api.user.DeviceManager` covers group membership only
+(:meth:`~chemotion_api.user.DeviceManager.add_users_to_group`); it does not create devices.
+
+.. autoclass:: chemotion_api.user.DeviceManager
+    :members:
+
+Admin-only endpoints
+--------------------
+
+:class:`chemotion_api.admin.AdminMenu` wraps administrator-only API endpoints. Construct it with an
+authenticated connection.
+
+.. autoclass:: chemotion_api.admin.AdminMenu
+    :members:
+
+Administration through the admin account
+----------------------------------------
+
+Logging in with an admin account makes :meth:`chemotion_api.Instance.get_user` return an
+:class:`chemotion_api.user.Admin`, which manages users, groups, devices and the system. Deleting a
+user, group or device needs its abbreviation passed back as ``confirm=``; a deleted user can be
+restored. ``restart_job`` takes one job at a time.
+
+.. code-block:: python
+
+    admin = Instance(url).login('ADM', password).get_user()
+    (user,) = admin.find_users('Smith')
+    admin.update_user(user['id'], account_active=False)
+    admin.set_user_rights(user['id'], generic_elements_admin=True)
+    device = admin.create_device('NMR 400', 'NMR1')
+    admin.update_device(device.id, people=[user['id']])
+    print(admin.disk_usage(), len(admin.jobs()))
+
+.. autoclass:: chemotion_api.user.Admin
+    :members:
+
+
+===== docs/Analyses.rst =====
+Analyses
+==========
+The Analyses object represents the Analyses tab in the Chemotion user interface.
+It contains all measurement data and metadata associated with the elements.
+
+Each element has an :class:`chemotion_api.elements.abstract_element.AnalysesList` (``element.analyses``).
+An analysis contains datasets; a dataset contains the measurement files and a metadata set, which Chemotion fills
+automatically if a converter profile (:meth:`chemotion_api.Instance.get_profile_manager`) matches the uploaded file.
+New analyses and datasets are created and uploaded when the element is saved.
+
+.. code-block:: python
+
+    sample = instance.get_sample(1)
+    analysis = sample.analyses.add_analyses('NMR')
+    analysis['description'] = '1H NMR in CDCl3'
+    analysis.add_dataset('./nmr_data.zip')
+    sample.save()
+
+Note that the datasets of an analysis are an attribute (``analysis.datasets``), not a dict key, and that a
+dataset's dict holds only its metadata set; its name is ``dataset.name``.
+
+.. code-block:: python
+
+    for analysis in sample.analyses:
+        print(analysis['name'], analysis['kind'] if 'kind' in analysis else '')
+        for dataset in analysis.datasets:
+            print('  ', dataset.name, dataset.id, [a['filename'] for a in dataset.attachments or []])
+
+Converter profiles
+------------------
+
+The metadata set of a dataset is only filled automatically if a converter profile matches the uploaded file.
+Profiles are managed with the :class:`chemotion_api.converter.ProfileManager`:
+
+.. code-block:: python
+
+    pm = instance.get_profile_manager()
+    for profile in pm.profiles:          # a property, not a method
+        print(profile.id, profile.title)
+    profile = pm.new_profile_from_file('./my_profile.json')
+    profile.save()
+
+API Classes
+------------
+
+.. autoclass:: chemotion_api.elements.abstract_element.AnalysesList
+    :members:
+
+.. autoclass:: chemotion_api.elements.abstract_element.Analyses
+    :members:
+
+.. autoclass:: chemotion_api.elements.abstract_element.Dataset
+    :members:
+
+.. autoclass:: chemotion_api.converter.ProfileManager
+    :members:
+
+.. autoclass:: chemotion_api.converter.Profile
+    :members:
+
+===== docs/Attachments.rst =====
+Attachments
+================
+
+This object handles the files attached to an element (``element.attachments``).
+New files are added with :meth:`chemotion_api.elements.attachments.Attachments.add_file` and uploaded when
+the element is saved. To load a new attachment, reload the element first (``element.save(load_after_save=True)``).
+See also Example 3 in :doc:`Examples`.
+
+API Classes
+------------
+
+.. autoclass:: chemotion_api.elements.attachments.Attachments
+    :members:
+
+.. autoclass:: chemotion_api.elements.attachments.Attachment
+    :members:
+
+===== docs/CellLineDetails.rst =====
+Cell line
+==========
+
+A cell-line sample is a quantity of cells: amount, unit, passage, contamination. It belongs to a
+cell-line **material**, the cell line itself, which every sample of it shares: name, source,
+organism, tissue, growth medium and so on. The client keeps the two apart. ``properties`` holds
+the sample's own fields and :attr:`~chemotion_api.elements.cell_line.CellLine.material` the
+shared ones.
+
+Create one with :meth:`chemotion_api.collection.Collection.new_cell_line`, naming the material
+and its source. An existing material with that name and source is reused; otherwise saving
+creates one. ``amount``, ``unit`` and ``passage`` must be set before saving. Fetch one with
+:meth:`chemotion_api.Instance.get_cell_line` and list them with
+:meth:`chemotion_api.collection.Collection.get_cell_lines`.
+
+.. code-block:: python
+
+    line = col.new_cell_line('HeLa', source='ATCC')
+    line.properties['amount'] = 1_000_000
+    line.properties['unit'] = 'cells'
+    line.properties['passage'] = 3
+    line.material['organism'] = 'Homo sapiens'
+    line.save()
+
+How the material behaves on save:
+
+* Changing the material's ``name`` or ``source`` links the sample to another material, which is
+  created if none matches.
+* Every save sends the full material, so a save that only changed the sample never re-links it.
+* The ELN applies changes to the material's other fields only when you created that material. For
+  a material someone else created, it ignores the change while reporting success. The client
+  checks this first and raises ``PermissionError`` instead.
+* A change to the material shows on every sample of that cell line.
+
+.. autoclass:: chemotion_api.elements.cell_line.CellLine
+    :members:
+
+
+===== docs/Collection.rst =====
+Collection
+==========
+
+
+Collections are the main tool given by the Chemotion system to organize elements.
+In the Python API, collections are separated in different classes. The root collection
+is the basic element to work with collections.
+
+Collections are addressed by unix-like paths built from their labels, e.g. ``'/Projects/Team One'``.
+The label can also be read with the aliases ``name``, ``get_label()`` and ``get_name()``.
+Paths starting with ``/`` are absolute, all other paths are relative to the collection the method is called on.
+Changes to the collection tree (add, move, delete) are only sent to the server when
+:meth:`chemotion_api.collection.RootCollection.save` is called;
+:meth:`chemotion_api.collection.Collection.get_or_create_collection` saves right away.
+
+.. code-block:: python
+
+    root = instance.get_root_collection()
+    col = root.get_or_create_collection('/Projects/Team One')
+    col.add_collection('P 124')
+    col.get_collection('P 122').move('/Done Projects')
+    root.save()
+
+To iterate over the whole collection tree (or a subtree) use
+:meth:`chemotion_api.collection.RootCollection.walk`. It walks depth-first and yields a parent
+before its children:
+
+.. code-block:: python
+
+    root = instance.get_root_collection()
+    for col in root.walk():                      # every owned collection
+        print(col.get_path(), len(col.get_samples()))
+    for col in root.sync_root.walk():            # every collection shared with you
+        print(col.get_path())
+    sub = root.get_collection('/Projects')
+    list(sub.walk(include_self=True, max_depth=1))   # '/Projects' and its direct children
+
+Elements are moved between collections with
+:meth:`chemotion_api.collection.AbstractCollection.move_elements`,
+:meth:`chemotion_api.collection.AbstractCollection.assign_elements` and
+:meth:`chemotion_api.collection.AbstractCollection.remove_elements`
+(or the element methods ``move_to``, ``assign_to`` and ``remove_from``). These requests are sent right away.
+Assigning adds the same element to a second collection, it does not duplicate it.
+Elements cannot be moved or removed from the root ('All') collection:
+
+.. code-block:: python
+
+    src = root.get_collection('/Projects/Team One')
+    dest = root.get_collection('/Done Projects')
+    sample = src.get_samples()[0]
+    src.move_elements(dest, sample)       # or sample.move_to(dest, src)
+    root.assign_elements(src, sample)     # or sample.assign_to(src)
+    src.remove_elements(sample)           # or sample.remove_from(src)
+
+
+Export and import
+*****************
+
+A collection can be exported in the ELN's own archive format, the same ZIP its web interface
+produces, with :meth:`chemotion_api.collection.Collection.export_zip`. The ELN builds the archive
+in the background; the method waits for it and saves it. Such an archive is imported with
+:meth:`chemotion_api.Instance.import_zip`, which returns the collections it created. This is
+Chemotion's native format, not ``.eln``.
+
+.. code-block:: python
+
+    archive = col.export_zip('project.zip')
+    new_collections = instance.import_zip(archive)
+
+
+.. autoclass:: chemotion_api.collection.RootCollection
+    :members:
+    :inherited-members:
+
+The root collection organizes the standard Collections:
+
+.. autoclass:: chemotion_api.collection.Collection
+    :members:
+    :inherited-members:
+
+.. autoenum:: chemotion_api.collection.CollectionSharePermission
+
+Collections shared **with** you are reached through :attr:`RootCollection.sync_root`. The
+"sync" naming predates ELN v4, which removed the ``/syncCollections`` namespace: shared
+collections now arrive in the ``shared_with_me`` list of the ordinary collection listing, and no
+extra request is made. The names are kept for compatibility.
+
+.. autoclass:: chemotion_api.collection.RootSyncCollection
+    :members:
+    :inherited-members:
+
+
+===== docs/DataExchange.rst =====
+Data in and out
+===============
+
+Collection export and import, sample import, table exports, reports, the inbox and ELN-to-ELN
+transfer. Exports, imports and reports run as background jobs on the server; the client starts the
+job and waits for its notification (``timeout=`` seconds), since the server does not return a job id.
+
+Collection export and import
+----------------------------
+
+.. code-block:: python
+
+    collection.export_zip('project.zip')                   # the ELN's native archive
+    new_collections = instance.import_zip('project.zip')
+
+.. automethod:: chemotion_api.collection.AbstractCollection.export_zip
+    :no-index:
+.. automethod:: chemotion_api.Instance.import_zip
+    :no-index:
+
+Importing samples
+-----------------
+
+.. code-block:: python
+
+    result = collection.import_samples('samples.sdf')      # .sdf, .mol, .csv, .xlsx
+    assert result.ok, result.message
+
+.. automethod:: chemotion_api.collection.AbstractCollection.import_samples
+
+Table exports
+-------------
+
+.. code-block:: python
+
+    collection.export_elements('table.xlsx', sample, reaction)            # or file_format='sdf'
+    collection.export_reaction_smiles('reactions.csv', reaction, notation='SM>>P')
+    reaction.export_samples_excel('reaction_samples.xlsx')
+    wellplate.download_template('plate.xlsx'); wellplate.import_spreadsheet('plate.xlsx')
+
+.. autodata:: chemotion_api.reports.DEFAULT_EXPORT_COLUMNS
+.. autodata:: chemotion_api.reports.REACTION_SMILES_NOTATIONS
+
+Reports
+-------
+
+.. code-block:: python
+
+    archive = instance.create_report(reaction, sample, file_name='Weekly',
+                                     reaction_settings={'variations': False})
+    archive.download('weekly.docx')
+    reaction.report_docx('reaction.docx')       # generated right away
+
+.. autofunction:: chemotion_api.reports.report_payload
+.. autoclass:: chemotion_api.reports.Archive
+    :members: download, refresh, delete
+
+The inbox
+---------
+
+.. code-block:: python
+
+    instance.inbox.upload('nmr.zip')
+    file = instance.inbox.unlinked_attachments()[0]
+    instance.inbox.assign(file, sample)          # becomes a new analysis of the sample
+
+.. automethod:: chemotion_api.inbox.Inbox.assign
+
+Analyses without the element
+----------------------------
+
+``element.save_analyses()`` saves names, status, content, dataset metadata and new files of the
+analyses only; ``element.delete_analysis(analysis)`` deletes one right away.
+
+Transfer to another ELN or the repository
+-----------------------------------------
+
+.. code-block:: python
+
+    token = receiving_collection.gate_token(origin='https://sender.example.org')   # on the receiver
+    collection.register_gate('https://receiver.example.org/', token)             # on the sender
+    collection.check_transmission('https://receiver.example.org/')
+    collection.transmit('https://receiver.example.org/')
+
+The target has no default: the server's default is the public Chemotion Repository.
+
+
+===== docs/DeviceDescriptionDetails.rst =====
+Device description
+===================
+
+A device description records an instrument: its type, vendor, version, location, operators and
+how it is used. Create one with
+:meth:`chemotion_api.collection.Collection.new_device_description`, fetch one with
+:meth:`chemotion_api.Instance.get_device_description`, and list them with
+:meth:`chemotion_api.collection.Collection.get_device_descriptions`.
+
+``properties`` holds the commonly used fields, such as ``name``, ``serial_number``,
+``vendor_company_name``, ``device_type_name``, ``room`` and ``general_tags``. Every field is
+optional. The ELN stores many more, such as maintenance schedules; fields the client does not
+expose are kept unchanged when you save.
+
+.. code-block:: python
+
+    device = col.new_device_description()
+    device.properties['name'] = 'NMR 400'
+    device.properties['vendor_company_name'] = 'Bruker'
+    device.properties['general_tags'] = ['nmr']
+    device.save()
+
+    for device in col.get_device_descriptions():
+        print(device.properties['name'], device.ontology_terms())
+
+``ontology_terms()`` returns the ontology annotations an ELN administrator picked for the device,
+as ``{'iri': …, 'label': …}`` entries. If the ELN refuses to create a device description,
+``save()`` raises ``ValueError`` with the server's reasons.
+
+.. autoclass:: chemotion_api.elements.device_description.DeviceDescription
+    :members:
+
+
+===== docs/Elements.rst =====
+Elements
+==========
+
+The API can handle different kinds of elements from Chemotion.
+It can read and write samples, reactions, wellplates, research plans, screens, cell lines,
+SBMM samples and device descriptions, as well as LabIMotion generic elements.
+
+How to load Elements
+******************************
+
+Single elements can be fetched directly from the instance,
+whereas lists of elements must be fetched by a collection.
+The documentation for these methods can be found in the corresponding sections
+(:mod:`chemotion_api.collection.Collection` & :mod:`chemotion_api.Instance`).
+
+Let's construct an example based on Samples.
+To load a single sample you can use :meth:`chemotion_api.Instance.get_sample`.
+However, to do so you need to know the exact Database Id of the Sample.
+
+.. code-block:: python
+
+    try:
+        sample = instance.get_sample(3)
+    except requests.exceptions.RequestException as e:
+        pass
+
+To load all elements within a list use :meth:`chemotion_api.collection.Collection.get_samples`.
+This method returns an Object of class ElementSet
+
+.. autoclass:: chemotion_api.elements.ElementSet
+    :members: page, iter_pages, next_page, prev_page, load_element
+
+.. code-block:: python
+
+    try:
+        for sample in instance.get_root_collection().get_collection('Main Test').get_samples():
+            pass # DO something
+    except requests.exceptions.RequestException as e:
+        pass
+
+The elements are loaded lazily, page by page, with 10 elements per page by default.
+You can change the page size with the *per_page* argument of the get methods
+(e.g. ``col.get_samples(per_page=50)``). All get methods also accept *updated_from_date* and
+*updated_to_date* to fetch only elements updated in a time range.
+
+Alternatively, elements can be loaded using their JSON-LD *@id*.
+Use the method :meth:`chemotion_api.Instance.get_json_ld_id`.
+This id contains its origin host, type and DB id.
+The following nonsense code snippet introduces the workflow:
+
+.. code-block:: python
+
+    try:
+        sample_A = instance.get_sample(3)
+        sample_B = instance.get_json_ld_id(sample_A.json_ld['@id'])
+        assert sample_A == sample_B
+    except requests.exceptions.RequestException as e:
+        pass
+
+
+The JSON-LD alternative for loading lists of elements uses
+the JSON-LD property *@type*: :meth:`chemotion_api.collection.Collection.get_elements_of_iri`.
+This type contains the version and the element type. All types known by the server are listed by
+:meth:`chemotion_api.Instance.get_all_types`.
+The following nonsensical code snippet introduces the workflow:
+
+.. code-block:: python
+
+    try:
+        sample_A = instance.get_sample(3)
+        col = instance.get_root_collection().get_collection('Main Test')
+        for sample in col.get_elements_of_iri(sample_A.json_ld['@type']):
+            pass # DO something
+    except requests.exceptions.RequestException as e:
+        pass
+
+Elements can also be found with the advanced search, see :doc:`Search`.
+
+Elements in a list are only partially loaded. An element is loaded completely (one request per element) the first time its properties, segments, analyses or attachments are read or changed, so neither reading nor saving uses incomplete data. ``id``, ``name``, ``short_label`` and ``json_data`` are available without loading.
+Elements accessed by index (``col.get_samples()[3]``) are loaded completely.
+
+How to create Elements
+******************************
+
+To make a new entry in the ELN, you must first select the collection in which the element is to be created. Collection objects have the appropriate methods for creating objects.
+
+The following methods can be used to create the standard objects. They create an empty object of their type; cell lines and SBMM samples need a little information up front.
+
+The created object is not saved and must be saved explicitly so that the entry is transferred to the ELN.
+
+* :meth:`chemotion_api.collection.Collection.new_sample`
+* :meth:`chemotion_api.collection.Collection.new_reaction`
+* :meth:`chemotion_api.collection.Collection.new_research_plan`
+* :meth:`chemotion_api.collection.Collection.new_wellplate`
+* :meth:`chemotion_api.collection.Collection.new_screen`
+* :meth:`chemotion_api.collection.Collection.new_device_description`
+* :meth:`chemotion_api.collection.Collection.new_cell_line` (material name and source)
+* :meth:`chemotion_api.collection.Collection.new_sbmm_sample` (UniProt accession)
+
+To create a generic element, the type must be specified as a parameter. Either by the human-readable label or by the system-internal name:
+
+* :meth:`chemotion_api.collection.Collection.new_generic`
+* :meth:`chemotion_api.collection.Collection.new_generic_by_label`
+
+Since a sample cannot be created without a molecule (not by default at least), there is also the shortcut using the following methods
+
+* :meth:`chemotion_api.collection.Collection.new_sample_smiles`
+* :meth:`chemotion_api.collection.Collection.new_solvent`
+
+And finally, all objects can be created using the IRI-based method:
+
+* :meth:`chemotion_api.collection.Collection.new_element_by_iri`
+
+
+.. code-block:: python
+
+    try:
+        col = instance.get_root_collection().get_collection('Main Test')
+        sample = col.new_sample_smiles('CCO')
+        sample.properties['external_label'] = 'Ethanol'
+        sample.save()
+    except requests.exceptions.RequestException as e:
+        pass
+
+How to work with Elements
+********************************
+
+All Objects have a set of common properties and methods:
+
+* ``properties``: the data of the main tab of the element. The available keys are listed in the
+  sections of the element types.
+* ``segments``: the generic segments (tabs) of the element, see :doc:`Segments`.
+* ``analyses``: the analyses tab, see :doc:`Analyses`.
+* ``attachments``: the attached files, see :doc:`Attachments`.
+* ``save()`` / ``load()``: writes the element to / reads it from the server.
+* ``open()``: opens the saved element in a new tab of your web browser; ``url()`` returns its URL.
+
+.. code-block:: python
+
+    sample = instance.get_sample(3)
+    sample.properties['description'] = 'Stored in the fridge'
+    sample.save()
+    # Check the result in the Chemotion web client (you need to be logged in in the browser)
+    sample.open()
+
+Restricted elements
+-------------------
+
+An element in a collection shared with you below the full detail level (10) comes with some fields
+withheld by the server. :attr:`~chemotion_api.elements.abstract_element.AbstractElement.is_restricted`
+tells you; withheld properties read as :data:`chemotion_api.utils.withheld.WITHHELD`, and
+``save()`` refuses such an element with ``PermissionError`` (it would write placeholders over the
+real values).
+
+``WITHHELD`` is neither ``None`` nor a number. Test for it by identity, ``value is WITHHELD``.
+Using it as a number — ``float()``, arithmetic, comparisons — raises ``WithheldValueError`` (a
+``PermissionError``). It is also a ``str`` whose text is ``'***'``, the server's own mask, so the
+element's raw ``json_data`` still serialises exactly as the server sent it. As a consequence,
+``WITHHELD == '***'`` is true and ``isinstance(WITHHELD, str)`` too: compare by identity, not by
+equality or type.
+
+.. code-block:: python
+
+    from chemotion_api.utils.withheld import WITHHELD
+
+    for sample in shared_collection.get_samples():
+        if sample.is_restricted and sample.properties['description'] is WITHHELD:
+            print(sample.id, 'description withheld')
+
+.. autodata:: chemotion_api.utils.withheld.WITHHELD
+    :no-value:
+
+.. autoexception:: chemotion_api.utils.withheld.WithheldValueError
+
+Rich text
+---------
+
+Some properties are rich text in the ELN — a reaction's ``description`` and ``observation``, and the
+``description`` of a wellplate or a screen. They are stored as `Quill deltas
+<https://quilljs.com/docs/delta>`_, the ELN editor's format, and read as one;
+:func:`~chemotion_api.quill_to_text` flattens it to text. Write a plain string — it is stored via
+:func:`~chemotion_api.text_to_quill`, as a delta of the shape the ELN creates itself — or a
+well-formed delta, so content read from the ELN (formatting included) can be written back. Anything
+that is neither raises ``ValueError``.
+
+.. code-block:: python
+
+    from chemotion_api import quill_to_text
+
+    reaction.properties['observation'] = 'Turned yellow after 5 min.
+    reaction.save()
+    print(quill_to_text(reaction.properties['description']))
+
+.. autofunction:: chemotion_api.text_to_quill
+
+.. autofunction:: chemotion_api.quill_to_text
+
+.. autoclass:: chemotion_api.elements.abstract_element.AbstractElement
+    :members:
+
+===== docs/Examples.rst =====
+Getting Started
+================
+
+
+Installation/Usage:
+*******************
+The package has been published on PyPi, it can be installed using pip.
+
+.. warning::
+   This is the **v4-only** release line. It requires a Chemotion ELN **v4** server and refuses to
+   connect to anything else; for an ELN 3.1.x server install the ``312.x`` line instead. It needs
+   Python 3.14. If the version published on PyPI is still from an older line, install from
+   source as below.
+
+.. note::
+   Log in with an API token: create one in the ELN under *Account & Profile* → *Account* →
+   *Authentication Token* (the ELN requires two-factor authentication for this) and pass it to :meth:`~chemotion_api.Instance.login_token`.
+   :meth:`~chemotion_api.Instance.login` with a user name and password is deprecated, issues a
+   ``FutureWarning``.
+
+.. code-block:: bash
+
+    git clone https://github.com/Chemotion/chemotionapi.git
+    cd chemotionapi
+    pip install .
+
+The package uses `python-magic <https://pypi.org/project/python-magic/>`__ to detect the type of uploaded files,
+so the ``libmagic`` library must also be installed (see below).
+
+``PostgreSQL`` client tools are required only for the ``chemotion_api`` command line's
+backup/restore subcommands, which operate on a dockerized instance's database.
+
+The instance CLI (Example 4) additionally needs `Docker <https://docs.docker.com/>`__ with Docker Compose,
+and the PostgreSQL client tools (``pg_dump``, ``pg_restore``, ``createdb``, ``dropdb``) for ``backup`` and ``restore``.
+For instructions about how to install ``PostgreSQL`` please refer `here <https://www.postgresql.org/>`__.
+
+Installing libmagic
+_________________________
+
+**Debian/Ubuntu**
+
+
+.. code-block:: sh
+
+    sudo apt-get install libmagic1
+
+**Windows**
+
+You'll need DLLs for libmagic. @julian-r maintains a pypi package with the DLLs, you can fetch it with:
+
+.. code-block:: sh
+
+    pip install python-magic-bin
+
+**OSX**
+
+* When using Homebrew: brew install libmagic
+* When using macports: port install file
+
+Example 1) Create a new Reaction
+**************************************************
+.. code-block:: python
+
+    """
+    This Example shows all necessary steps to create a new Reaction.
+
+    1) We will login to a locally running Instance of chemotion
+    2) We will create a new collection
+    3) We will create 3 new samples and add some sample Properties
+    4) We finally create a new Reaction.
+    """
+    import datetime
+
+    from chemotion_api.elements.reaction import Reaction
+    from chemotion_api.elements.sample import Sample
+    from chemotion_api import Instance
+    from chemotion_api.collection import RootCollection, Collection
+
+    if __name__ == '__main__':
+        # Initialize a new Instance connection
+        instance = Instance('https://chemotion.dept.uni.de')
+        try:
+            # Test if the host is available and log in with your API token
+            instance.test_connection().login_token('YOUR_API_TOKEN')
+        except ConnectionError:
+            # Exit if connection fails
+            exit(1)
+        except PermissionError:
+            # Exit if Login fails
+            exit(2)
+
+        # Get root collection object
+        root_col: RootCollection = instance.get_root_collection()
+        # Get or create collection 'Main Test'
+        mt_col: Collection = root_col.get_or_create_collection('Main Test')
+        # Create a new Collection with the current date/time as label
+        now_as_str = datetime.datetime.now().isoformat()
+        project_col = mt_col.get_or_create_collection(now_as_str)
+
+        # Create sample for Ammonium hydroxide
+        sample_amm: Sample = project_col.new_sample_smiles('N.O')
+        sample_amm.properties['external_label'] = "Ammonium hydroxide"
+        sample_amm.save()
+        # Create sample for Copper
+        sample_copper: Sample = project_col.new_sample_smiles('[Cu]')
+        sample_copper.properties['external_label'] = "Copper"
+        sample_copper.save()
+        # Create sample for product
+        sample_res: Sample = project_col.new_sample_smiles('[Cu+2]([NH3])([NH3])([NH3])([NH3])[Cl-].[Cl-]')
+        sample_res.save()
+
+        # Create a new Reaction
+        reaction: Reaction = project_col.new_reaction()
+
+        # Add samples to the Reaction. Starting materials and reactants are added as splits,
+        # products as copies of the samples.
+        reaction.properties['starting_materials'].append(sample_amm)
+        reaction.properties['reactants'].append(sample_copper)
+        reaction.properties['products'].append(sample_res)
+
+        # Add temperature profile to the Reaction
+        reaction.properties['temperature'].add_time_point(hour=0,minute=0,second=0, temperature=50)
+        reaction.properties['temperature'].add_time_point(hour=1,minute=0,second=0, temperature=100)
+        # Save reaction
+        reaction.save()
+
+Example 2) Share a Collection
+**************************************************
+
+.. code-block:: python
+
+    """
+    This Example shows all necessary steps to share a collection.
+
+    1) Create a group
+    2) Find all users
+    3) Share collection
+    """
+
+    from chemotion_api.collection import CollectionSharePermission
+    from chemotion_api.user import Person, Group
+
+    from chemotion_api import Instance
+
+    if __name__ == '__main__':
+        # Initialize a new Instance connection
+        instance = Instance('https://chemotion.dept.uni.de')
+        try:
+            # Test if the host is available and log in with your API token
+            instance.test_connection().login_token('YOUR_API_TOKEN')
+        except ConnectionError:
+            # Exit if connection fails
+            exit(1)
+        except PermissionError:
+            # Exit if Login fails
+            exit(2)
+        # Get your user data
+        me: Person = instance.get_user()
+        # Create new group
+        stg: Group = me.create_group('Test', 'Group', "STG")
+        # Find all users that need to be added to the group
+        users = instance.find_user_by_name('Tom') + instance.find_user_by_name('Jerry')
+        # Add the user
+        stg.add_users(*users)
+        # Share collection with STG
+        # detail_level is required: 0 discloses least, 10 every field (and lets the
+        # recipients export the collection). There is no default — it is your decision.
+        instance.get_root_collection().get_collection('Main Test').share(
+            CollectionSharePermission.EditElements, stg, detail_level=5)
+
+        # Revoke it again (with no users given, every share on the collection goes):
+        instance.get_root_collection().get_collection('Main Test').unshare(stg)
+
+Example 3) Upload/Load Attachment
+**************************************************
+
+.. code-block:: python
+
+    """
+    In this example we load a Research Plan and add an attachment
+
+    1) Load a Research Plan
+    2) Add an attachment
+    3) Save an attachment as file
+    """
+
+    from chemotion_api.collection import CollectionSharePermission
+    from chemotion_api.user import Person, Group
+
+    from chemotion_api import Instance
+
+    if __name__ == '__main__':
+        # Initialize a new Instance connection
+        instance = Instance('https://chemotion.dept.uni.de')
+        try:
+            # Test if the host is available and log in with your API token
+            instance.test_connection().login_token('YOUR_API_TOKEN')
+        except ConnectionError:
+            # Exit if connection fails
+            exit(1)
+        except PermissionError:
+            # Exit if Login fails
+            exit(2)
+        # Load the research plan with ID 1
+        s = instance.get_research_plan(1)
+
+        s.attachments.add_file('./GeneralSetup.png')
+        # Save and reload the research plan. New attachments can only be loaded after reloading.
+        s.save(load_after_save=True)
+
+        # Attachments are found by their file name, without the directory
+        f = s.attachments.load_attachment(filename="GeneralSetup.png")
+        os.makedirs('./TEST_TO_DEL', exist_ok=True)
+        f.save_file('./TEST_TO_DEL')
+
+Example 4) Instance CLI
+**************************************************
+
+.. raw:: html
+
+    <style>
+    .warning {
+        color:red;
+        font-weight: bold;
+        font-size: 18px;
+    }
+    </style>
+
+.. role:: warning
+
+:warning:`THIS CLI TOOLS MUST NOT BE USED FOR PRODUCTIVE INSTANCES`
+
+THE CLI tool is only for development & test usages. For Productive Instances please use `ChemCLI <https://github.com/Chemotion/ChemOrc/>`_
+
+.. code-block:: sh
+
+    # This Example shows all necessary steps to back up and restore an instance.
+    #
+    # 1) Create a Instance
+    # 2) Make a backup
+    # 3) Restore the backup
+
+    > chemotion_api --help
+    Usage: chemotion_api [OPTIONS] COMMAND [ARGS]...
+
+    Options:
+      --help  Show this message and exit.
+
+    Commands:
+      available-versions    Fetch all available Version of Chemotion
+      backup                Make a dump of the Chemotion PostgreSQL
+      change-port           Change the port on which the ELN can be reached...
+      change-postgres-port  Change the port on which the ELN DB can be...
+      check                 Check all running containers
+      down                  Same as docker compose down <services>
+      insert-dataset        Insert a dataset.
+      new                   Create a new docker-compose file with all...
+      restore               Restore a ProstgreSQL dump.
+      stop                  Same as docker compose stop <services>
+      up                    Same as docker compose up <services>
+      update-version        Updated the version of Chemotion instance
+
+    # Create a new Instance (the first prompt asks for the docker compose file path)
+    > chemotion_api new
+    Your name [./docker-compose.yml]:
+    Specify a version [latest]: 4.0.0
+    Public ELN url [http://localhost:<ELN_PORT>]:
+    Port on which the ELN can be reached [4000]:
+    Port on which the Postgres DB can be reached [5432]:
+    Port on which the Adminer can be reached [8080]:
+
+    # Run Instance
+    > chemotion_api up
+
+    # Make a DB backup
+    > chemotion_api backup
+    Output tar dump file [<db_name>_<time_stamp>.tar]: test_dump.tar
+
+
+    # Restore a DB backup
+    > chemotion_api restore
+    Your tar dump file: test_dump.tar
+
+
+Every command has a ``--help`` option listing all of its options, e.g. ``chemotion_api backup --help``.
+
+
+
+===== docs/GenericElementsDetails.rst =====
+Generic Elements
+======================
+
+Generic elements are element types defined by the administration of a Chemotion instance with LabIMotion.
+They are loaded with :meth:`chemotion_api.Instance.get_generic_by_name` or
+:meth:`chemotion_api.Instance.get_generic_by_label`, listed with
+:meth:`chemotion_api.collection.Collection.get_generics_by_name` or
+:meth:`chemotion_api.collection.Collection.get_generics_by_label`, and created with
+:meth:`chemotion_api.collection.Collection.new_generic` or
+:meth:`chemotion_api.collection.Collection.new_generic_by_label`.
+
+Their templates can be loaded and edited with the :class:`chemotion_api.labImotion.GenericManager`
+(:meth:`chemotion_api.Instance.generic_manager`). A template is a
+:class:`chemotion_api.labImotion.GenericElementKlass` (formerly ``labImotion.GenericElement``); the element
+exposes the label, name and version of its template as :attr:`~GenericElement.label`,
+:attr:`~GenericElement.klass_name` and :attr:`~GenericElement.klass_version`.
+
+The server sets the short label of a new element on its first save: the creator's initials, the template's
+``klass_prefix`` and a counter of the user's elements of this type, e.g. ``API-WRK10``.
+
+Layers and workflows
+--------------------
+
+Layers without fields appear in ``properties`` as empty dicts; :meth:`~GenericElement.layers_without_fields`
+lists them. The generic segments of the element type are listed by ``elem.segments.available()``.
+
+``properties`` holds the layers by their label: ``properties['Nr 1']['name_one']``. A layer that is used more
+than once (e.g. in two workflows) gets a suffix taken from its layer key: the layer ``three.1`` is
+``properties['Nr 3.1']``. The suffix belongs to the layer, so the names stay the same when the element is
+saved and loaded again. Layers are ordered by position and workflow step.
+
+The next steps of the workflows are listed by :meth:`~GenericElement.wf_next_options`; each option names its
+workflow (``wf_idx``, ``wf_id``) and template layer (``layer_key``, ``layer_label``) and can be passed to
+:meth:`~GenericElement.wf_next`, which returns the key of the new layer in ``properties``::
+
+    option = next(o for o in elem.wf_next_options() if o['wf_idx'] == 1 and o['layer_label'] == 'Nr 4')
+    key = elem.wf_next(**option)
+    elem.properties[key]['name_four'] = 'done'
+
+:meth:`~GenericElement.wf_workflows` lists the layers of each workflow with their ``properties`` key, and
+:meth:`~GenericElement.wf_layer` returns a layer by workflow and label or key: ``elem.wf_layer(1, 'Nr 3')``.
+
+Creating a template
+-------------------
+
+:meth:`~chemotion_api.labImotion.GenericManager.create_new_element` creates a template and returns it. By
+default it releases an empty version 0.1 and activates the template; only released and active templates can
+be used for new elements. Layers and fields are added to ``klass.properties``, and a new release makes them
+available::
+
+    from chemotion_api.labImotion.items.fields import FieldType
+    from chemotion_api.labImotion.items.options import SaveActionType
+
+    gm = instance.generic_manager()
+    klass = gm.create_new_element('Micro Biology', 'bug', description='...', prefix='MB')
+    general = klass.properties.add_new_layer('General')
+    general.add_field(FieldType.TEXT, 'Strain')
+    general.add_field(FieldType.SELECT, 'Growth medium', options=['LB', 'TB'])
+    klass.properties.add_new_layer('Cultivation').add_field(FieldType.INTEGER, 'Temperature (°C)')
+    klass.save(SaveActionType.MINOR)   # release; SaveActionType.DRAFT only stores the template
+
+    elem = collection.new_generic_by_label('Micro Biology')
+    elem.properties['General']['Strain'] = 'E. coli K12'
+    elem.save()
+
+Notes:
+
+* Layer and field keys are generated from the labels (``'Temperature (°C)'`` -> ``temperature_c``) unless
+  given with ``key=`` / ``field=``. Keys must be unique.
+* A SELECT field uses a select option list of the template. ``options=[...]`` creates one for the field;
+  shared lists are created with ``klass.properties.add_select_option(key, values)`` and linked by
+  ``field.option_layers = key``.
+* ``field.required`` and ``field.default`` are stored in the template.
+* ``field.ontology`` links a field to an ontology term, like "Link to ontology terminology" in the template
+  designer. Terms come from the TIB Terminology Service (NFDI4Chem collection), the same service the
+  Chemotion UI uses: set a term ID (``'CHMO:0000593'``, short form or IRI; it is looked up online), a term
+  dict from :meth:`~chemotion_api.labImotion.GenericManager.search_ontology_terms`, or ``None`` to remove the
+  link. ``add_field(..., ontology=...)`` does the same. On elements, ``elem.field(layer, field).ontology``
+  (and ``elem.segments.field(...).ontology``) returns the term of the template.
+* Elements address their fields by the labels of the template version they were created with. After a
+  label change, existing elements keep the old names; unknown names raise a ``ValueError`` on save.
+* The ``description`` is stored as ``desc``; the short label prefix is ``klass.klass_prefix``.
+* ``load_all_elements()`` skips templates that do not validate (with a warning); pass ``strict=True`` to
+  :meth:`GenericElementKlass.load_all` to get the error instead.
+* Element types are cached by the instance. :meth:`~chemotion_api.collection.Collection.new_generic_by_label`
+  reloads them if a label is unknown; ``instance.element_manager.reload()`` does it explicitly.
+
+.. autoclass:: chemotion_api.labImotion.GenericManager
+    :members: get_element, get_segment, get_dataset, load_all_elements, load_all_segments, load_all_datasets,
+        create_new_element, search_ontology_terms, get_ontology_term
+
+.. autoclass:: chemotion_api.elements.generic_element.GenericElement
+    :members:
+
+Template lifecycle, hub and variations
+--------------------------------------
+
+.. code-block:: python
+
+    from chemotion_api.labImotion.items.options import ElementType
+
+    gm = instance.generic_manager()
+    klass = gm.get_element(name='wrk')
+    klass.download('wrk.json')                      # upload() it on another ELN
+    for rev in klass.revisions(): print(rev.version)
+    gm.import_hub_template(gm.hub_templates(ElementType.SEGMENT)[0]['identifier'], ElementType.SEGMENT)
+
+    element.export_docx('element.docx')
+    element.save_variations({'row-1': {'properties': {}, 'metadata': {'notes': 'first'}, 'segments': {}}})
+    link = element.create_mtt_request(plate)        # opens the external MTT app
+    collection.split_generic_elements(element)
+
+    klass.delete(confirm=klass.label)               # admins only, irreversible
+
+.. autoclass:: chemotion_api.labImotion.base_generic_obj.KlassRevision
+
+
+
+===== docs/Instance.rst =====
+Chemotion Instance
+==================
+
+The chemotion instance is the foundation of the
+the python chemtion client. It includes all methods to work with this tool.
+
+.. autoclass:: chemotion_api.Instance
+    :members:
+
+User labels
+***********
+
+Chemotion shows coloured *user labels* on samples and reactions. On the wire an element carries
+only the label **ids**, so reading ``properties['user_labels']`` gives you something like
+``[3, 5]`` and nothing about what those mean.
+
+To get the id-to-title map for the logged-in user:
+
+.. code-block:: python
+
+    for label in instance.get_user_labels():
+        print(label.id, label.title, 'shared' if label.is_shared else 'private')
+
+You see your own private labels plus every shared one, in the order the ELN itself displays them.
+
+To resolve the labels *of a particular element*, use its ``user_labels_resolved`` property rather
+than matching ids by hand:
+
+.. code-block:: python
+
+    sample = instance.get_sample(3)
+    print(', '.join(label.display_title for label in sample.user_labels_resolved))
+
+The label list is fetched **once per connection**, so resolving labels across hundreds of
+elements costs a single request. The raw id list in ``properties['user_labels']`` is left
+untouched, so an element can be resolved and saved without changing what goes back to the server.
+
+An element may carry a label owned by another user, which the server will not return to you. That
+is not an error: the id resolves to a placeholder :class:`~chemotion_api.user.UserLabel` with
+``title`` ``None``, ``is_resolved`` ``False`` and ``display_title`` ``"#<id>"``. Prefer
+``display_title`` over ``title`` when building strings, so an unresolvable label cannot break a
+``join``.
+
+To create a label, or change one of your own, use :meth:`~chemotion_api.Instance.save_user_label`.
+The ELN overwrites every field a request leaves out, so the whole label is always sent; set every
+field you want to keep. ``access_level`` is ``0`` for a private label and ``1`` or ``2`` for a
+shared one. Put labels on an element through ``properties['user_labels']`` and save it.
+
+.. code-block:: python
+
+    from chemotion_api.user import UserLabel
+
+    label = instance.save_user_label(UserLabel(title='Needs review', color='#d9534f', access_level=0))
+    sample.properties['user_labels'] = list(sample.properties['user_labels'] or []) + [label.id]
+    sample.save()
+
+.. autoclass:: chemotion_api.user.UserLabel
+    :members:
+
+Affiliations
+************
+
+.. autoclass:: chemotion_api.user.Affiliation
+    :members:
+
+Errors
+******
+
+Requests the server refuses raise one of these. Each is also a ``ConnectionError``, so a broad
+``except ConnectionError`` still catches them.
+
+* :class:`~chemotion_api.connection.ChemotionRequestError`: the server answered with an error
+  status (4xx). The message carries the status, the request and a short form of the reply.
+* :class:`~chemotion_api.connection.ChemotionServerError`: a 5xx, usually the server failing on
+  data it did not accept.
+* :class:`~chemotion_api.connection.ChemotionRejectedError`: the server answered with a success
+  status but said in the body that it did not do it (``{"errors": …}``, ``{"error": …}``,
+  ``{"success": false}``). It is also a ``ValueError``; the decoded reply is in ``body``.
+
+Before a request is sent:
+
+* :class:`~chemotion_api.schema_manager.UnsupportedServerVersion`: the server is not an ELN v4.
+* :class:`~chemotion_api.connection.TokenExpiredError` (a ``PermissionError``): the login token
+  has expired; log in again.
+
+Reading a field the server withheld from you, as a number, raises
+:class:`~chemotion_api.utils.withheld.WithheldValueError` (a ``PermissionError``); see
+:doc:`Elements`.
+
+.. code-block:: python
+
+    from chemotion_api.connection import ChemotionRejectedError
+
+    admin = instance.get_user()            # logged in as an administrator
+
+    try:
+        device = admin.create_device('NMR 400', 'NMR')
+    except ChemotionRejectedError as e:
+        print('refused:', e.body)
+
+.. autoclass:: chemotion_api.connection.ChemotionRejectedError
+    :members:
+
+
+===== docs/LabData.rst =====
+Lab data and services
+=====================
+
+Chemical inventory and safety data sheets
+-----------------------------------------
+
+.. code-block:: python
+
+    chem = sample.get_chemical()            # always a Chemical; chem.exists says if it is stored
+    chem.cas = '64-17-5'
+    chem.data['status'] = 'Available'
+    chem.save()
+    chem = sample.attach_safety_sheet('sds.pdf', 'Merck', 'merckProductInfo', {'productNumber': 'E7023'})
+    print(chem.safety_sheets)
+    instance.set_inventory_label('CHI', 'Chemicals', 0, collection)
+
+.. autoclass:: chemotion_api.elements.sample.Chemical
+    :members: save, exists, safety_sheets
+    :no-index:
+.. automodule:: chemotion_api.chemicals
+    :members: find_safety_sheets, attach_safety_sheet, extract_safety_sheet
+
+Measurements
+------------
+
+.. code-block:: python
+
+    plan.create_measurements([{'sample': sample, 'description': 'yield', 'value': 87.5, 'unit': '%'}])
+    for m in sample.measurements():
+        print(m.description, m.value, m.unit)
+
+.. automodule:: chemotion_api.measurements
+    :members: Measurement, MeasurementError, create_measurements
+
+Image annotation
+----------------
+
+.. code-block:: python
+
+    svg = image.load_annotation()
+    image.save_annotation(svg.replace('</svg>', '<rect x="1" y="1" width="20" height="10"/></svg>'))
+
+Spectra, simulation and computation
+-----------------------------------
+
+These start work on services the ELN must have configured (ChemSpectra, nmrdb.org, the inference
+and compute servers).
+
+.. autoclass:: chemotion_api.spectra.Spectra
+    :members:
+.. automodule:: chemotion_api.compute
+    :members: simulate_nmr, predict_products, ComputeTask, submit_compute_task
+
+Weighing tasks
+--------------
+
+.. automodule:: chemotion_api.sample_tasks
+    :members: SampleTask, create_sample_task
+
+Text templates
+--------------
+
+.. code-block:: python
+
+    esi = instance.text_templates().predefined('esi')
+    sample.properties['description']['ops'] += esi.ops
+
+.. autoclass:: chemotion_api.text_templates.TextTemplates
+    :members:
+
+
+===== docs/MoreElements.rst =====
+More element types and element tools
+====================================
+
+Vessels, deletion, splitting, comments, private notes, versions, literature, labels, molecules and
+mixtures: tools that work across element types.
+
+Screens, cell lines, device descriptions and SBMM samples each have their own page
+(:doc:`ScreenDetails`, :doc:`CellLineDetails`, :doc:`DeviceDescriptionDetails`,
+:doc:`SbmmSampleDetails`). Device descriptions and SBMM samples can also be split on the server:
+
+.. code-block:: python
+
+    (sub,) = collection.split_device_descriptions(dev)
+    (part,) = collection.split_sbmm_samples(sbmm)
+
+Vessels
+-------
+
+Vessel templates describe a kind of vessel and are shared by everyone; vessels are physical items of
+a template. Both are saved immediately and have UUID ids.
+
+.. code-block:: python
+
+    flask = instance.new_vessel_template('Flask 250 ml', vessel_type='round bottom flask',
+                                         material_type='glass', volume_amount=250, volume_unit='ml').save()
+    v = collection.new_vessel(flask, weight_amount=120.5, weight_unit='g')
+    rack = collection.new_vessels(flask, 10, base_name='rack')
+
+.. automodule:: chemotion_api.vessels
+    :members: VesselTemplate, Vessel
+
+Deleting elements
+-----------------
+
+``element.delete()`` and ``collection.delete_elements(*elements)`` delete the way the web UI does:
+ELN v4 withdraws the elements from every collection you own and destroys only records left in no
+collection. ``delete()`` returns whether the record is really gone. Ask before deleting.
+
+Splitting
+---------
+
+``collection.split_samples(*samples)`` creates *linked* subsamples on the server (``<label>-<n>``).
+``Sample.split()`` only builds an unsaved copy, which is linked to its parent only when it is saved
+as part of a reaction or wellplate. Wellplates, device descriptions, SBMM samples and generic
+elements have matching ``split_*`` methods on the collection.
+
+Comments, private notes, versions, literature and labels
+--------------------------------------------------------
+
+.. code-block:: python
+
+    sample.add_comment('Check the purity', section='properties')
+    sample.set_private_note('only visible to me')
+    for version in sample.versions():
+        print(version.time, version.user, version.changes)
+    sample.add_reference(doi='10.1021/acs.jchemed.0c00101')
+    sample.properties['user_labels'] = [label.id]; sample.save()
+
+.. automethod:: chemotion_api.elements.abstract_element.AbstractElement.versions
+    :no-index:
+.. autoclass:: chemotion_api.elements.versions.Version
+    :members: revert
+.. autoclass:: chemotion_api.elements.literature.Reference
+
+Molecules and mixtures
+----------------------
+
+.. code-block:: python
+
+    mm = instance.molecule()
+    mol = mm.create_molecule_by_molfile(molfile)     # ValueError for unreadable molfiles
+    sample = collection.new_sample_molfile(molfile)
+    mm.load_cas(mol['inchikey']); mm.lookup_cas('64-17-5')
+    parts = sample.components()                       # mixture components
+
+.. autoclass:: chemotion_api.elements.components.Component
+    :members: new
+
+
+===== docs/ReactionDetails.rst =====
+Reaction
+==========
+
+A reaction has five material lists: starting materials, reactants, products, solvents and purification solvents
+(:class:`chemotion_api.elements.reaction.MaterialList`). Adding a sample to the starting materials or reactants
+adds a split of it, adding it to the products adds a copy.
+:meth:`chemotion_api.elements.reaction.MaterialList.append_no_split` adds the sample itself. In both cases the
+reaction, role and position of the sample are set and its amount is initialized. Saving the reaction recomputes the
+equivalents (and the yields of the products) from the amounts and the reference material.
+
+A sample can be in a reaction only once. Adding a sample the reaction already holds, in any of the five lists
+(the same object or the same id), raises ``ValueError``: the ELN keeps one link per sample and would drop the
+second entry on save. To move a sample to another role, remove it from its list first. A sample of another
+reaction is accepted; on save the ELN gives this reaction a split of it, with a new id.
+
+A sample's place in the reaction (reference, coefficient, waste and so on) is saved with the reaction;
+see :doc:`SampleDetails`. ``rinchi_string`` and ``rinchi_web_key`` are computed by the ELN and cannot
+be set.
+
+.. autoclass:: chemotion_api.elements.reaction.Reaction
+    :members:
+
+.. autoclass:: chemotion_api.elements.reaction.MaterialList
+    :members:
+
+.. autoclass:: chemotion_api.elements.reaction.Temperature
+    :members:
+
+Variations
+----------
+
+The variations tab of a reaction is accessible through :attr:`chemotion_api.elements.reaction.Reaction.variations`.
+Each variation has a temperature, a duration, notes, the quantities of all materials and the values of the reaction
+segments. Variations are saved with the reaction.
+
+.. code-block:: python
+
+    from chemotion_api.elements.utils import QuantityUnit
+
+    reaction = instance.get_reaction(1)
+    variation = reaction.variations.add_new()
+    variation.properties['temperature']['value'] = 80
+    variation.notes = 'Second run'
+
+    # Quantities of the materials
+    variation.starting_materials[0].set_quantity(2, QuantityUnit.Gram)
+    variation.reactants[0].set_equivalent(1.5)
+    variation.products[0].set_yield(85)  # in percent
+
+    # Link an (already saved) analysis of the reaction
+    variation.link_analyses(reaction.analyses.by_name('HPLC run 2'))
+
+    # Segment values ({segment: {layer: {field: value}}})
+    variation.segments['Electrochemistry']['Cell']['Electrode type'] = 'disk'
+    variation.segments['Electrochemistry']['Cell']['Temperature'] = {'value': 25, 'unit': 'C'}
+    reaction.save()
+
+Only text, integer, select and system-defined segment fields can be varied. Select fields take the option key
+or label, system-defined fields take ``{'value': ..., 'unit': ...}`` or a number in the field's default unit.
+On save, every variation gets the same segments, as the Chemotion frontend builds the columns from them.
+A system-defined field without a default unit in the segment template cannot be given a value in a
+variation, since the frontend cannot show it.
+
+Quantities of mixtures (:attr:`chemotion_api.elements.sample.Sample.is_mixture`) are not supported in
+variations yet.
+
+.. autoclass:: chemotion_api.elements.reaction.Variations
+    :members: add_new, remove
+
+.. autoclass:: chemotion_api.elements.reaction.Variation
+    :members: properties, segments, starting_materials, reactants, products, solvents, link_analyses, get_analyses
+
+.. autoclass:: chemotion_api.elements.reaction.SampleVariation
+    :members: sample, is_ref, potential_units, set_quantity, set_equivalent, set_yield, get_amount, get_mass, get_volume, get_equivalent_or_yield
+
+.. autoclass:: chemotion_api.elements.reaction.VariationSegments
+
+User labels
+-----------
+
+A reaction's user labels are exposed as bare ids in ``properties['user_labels']``. Use
+``reaction.user_labels_resolved`` to get :class:`~chemotion_api.user.UserLabel` objects with their
+titles — see :doc:`Instance` for details and the caching behaviour.
+
+
+===== docs/ResearchPlanDetails.rst =====
+Research Plan
+===============
+
+The body of a research plan is a list of entries: texts, tables, images, structures (ketcher),
+samples and reactions. New texts, tables and images can be added with
+:meth:`chemotion_api.elements.research_plan.ResearchPlan.add_richtext`,
+:meth:`chemotion_api.elements.research_plan.ResearchPlan.add_table` and
+:meth:`chemotion_api.elements.research_plan.ResearchPlan.add_image`.
+
+.. autoclass:: chemotion_api.elements.research_plan.ResearchPlan
+    :members:
+
+.. autoclass:: chemotion_api.elements.research_plan.Table
+    :members:
+
+.. autoclass:: chemotion_api.elements.research_plan.RichText
+    :members:
+
+
+===== docs/SampleDetails.rst =====
+Sample
+==========
+
+A sample is created in a collection, usually from a SMILES code
+(:meth:`chemotion_api.collection.Collection.new_sample_smiles`), or as solvent from the predefined
+solvent list (:meth:`chemotion_api.collection.Collection.new_solvent`).
+
+The amount of a sample is set with :meth:`chemotion_api.elements.sample.Sample.set_amount`, in gram, liter or mol
+(see :meth:`chemotion_api.elements.sample.Sample.allowed_quantity_units`). If the sample is part of a reaction,
+this updates the equivalents of all reaction materials. The converted amount is available as
+:attr:`chemotion_api.elements.sample.Sample.gram`, :attr:`chemotion_api.elements.sample.Sample.mol` and
+:attr:`chemotion_api.elements.sample.Sample.liter`; each is ``None`` when the sample has no amount or it
+cannot be converted (mol needs a molecular weight, liter a density or molarity).
+
+.. code-block:: python
+
+    from chemotion_api.elements.utils import QuantityUnit
+
+    sample = col.new_sample_smiles('CCO')
+    sample.properties['external_label'] = 'Ethanol'
+    sample.set_amount(2.5, QuantityUnit.Gram)
+    sample.save()
+
+    # Set the amount of a starting material via its equivalent
+    reaction = instance.get_reaction(1)
+    reaction.reactants[0].set_amount(1.5, QuantityUnit.Equivalent)
+    reaction.save()
+
+.. autoclass:: chemotion_api.elements.sample.Sample
+    :members:
+
+
+.. autoclass:: chemotion_api.elements.sample.Molecule
+    :members:
+
+.. autoclass:: chemotion_api.elements.sample.MoleculeManager
+    :members:
+
+.. autoclass:: chemotion_api.elements.sample.SolventList
+    :members:
+
+.. autoclass:: chemotion_api.elements.sample.GasPhaseObj
+    :members: ppm, time_in_h, temperature_in_k
+
+.. autoenum:: chemotion_api.elements.utils.QuantityUnit
+
+.. autoenum:: chemotion_api.elements.utils.GasType
+
+Saving a sample that is part of a reaction
+------------------------------------------
+
+A sample's place in a reaction (``reference``, ``equivalent``, ``coefficient``, ``position``,
+``waste``, ``show_label`` and the gas fields) is stored with the reaction, not with the sample. After
+changing one of these, save the reaction: ``sample.save()`` raises ``ValueError``, because the ELN
+would discard the change without an error.
+
+.. code-block:: python
+
+    reaction = instance.get_reaction(1)
+    reaction.starting_materials[0].properties['coefficient'] = 2
+    reaction.save()
+
+A saved sample's ``short_label`` cannot be changed; the ELN assigns it and ignores changes to it.
+
+Chemical inventory and safety data
+----------------------------------
+
+The ELN's *Chemicals* tab, with vendor, amounts, storage location and safety data, is a separate
+record. :meth:`~chemotion_api.elements.sample.Sample.get_chemical` returns it as a
+:class:`~chemotion_api.elements.sample.Chemical`. When the sample has none yet, ``exists`` is
+``False`` and ``save()`` creates it.
+
+.. code-block:: python
+
+    chemical = sample.get_chemical()
+    chemical.cas = '64-17-5'
+    chemical.data['location'] = 'Cabinet 3'
+    chemical.save()
+
+.. autoclass:: chemotion_api.elements.sample.Chemical
+    :members:
+
+Molecule names
+--------------
+
+A molecule is known by several names: IUPAC name, sum formula, and names users added. A sample
+shows one of them. :meth:`~chemotion_api.elements.sample.MoleculeManager.get_names` lists them,
+:meth:`~chemotion_api.elements.sample.MoleculeManager.add_name` adds one, and
+:attr:`~chemotion_api.elements.sample.Sample.molecule_name_id` chooses the one the sample shows.
+
+.. code-block:: python
+
+    molecules = instance.molecule()
+    name = molecules.add_name(sample.molecule['id'], 'Spirit')
+    sample.molecule_name_id = name.id
+    sample.save()
+
+.. autoclass:: chemotion_api.elements.sample.MoleculeName
+    :members:
+
+User labels
+-----------
+
+A sample's user labels are exposed as bare ids in ``properties['user_labels']``. Use
+``sample.user_labels_resolved`` to get :class:`~chemotion_api.user.UserLabel` objects with their
+titles — see :doc:`Instance` for details and the caching behaviour.
+
+
+===== docs/SbmmSampleDetails.rst =====
+SBMM sample
+============
+
+A sample of a sequence-based macromolecule, such as a protein. Create one with
+:meth:`chemotion_api.collection.Collection.new_sbmm_sample`, giving a UniProt accession. Fetch one
+with :meth:`chemotion_api.Instance.get_sbmm_sample` and list them with
+:meth:`chemotion_api.collection.Collection.get_sbmm_samples`.
+
+``properties`` holds the sample's own fields (``name``, ``external_label``, ``purity``,
+``supplier`` and others). Quantities such as ``concentration``, ``molarity`` or ``activity`` are
+``{'value': …, 'unit': …}`` pairs, like a sample's amounts. The protein is available as
+``macromolecule`` and is read-only.
+
+.. code-block:: python
+
+    s = col.new_sbmm_sample(uniprot='P69905')
+    s.properties['purity'] = 0.95
+    s.properties['concentration'] = {'value': 2.0, 'unit': 'g/L'}
+    s.save()
+    print(s.macromolecule['short_name'])
+
+.. note::
+   **Limitations.** A new sample's protein can only be chosen by UniProt accession. Proteins that
+   are not in UniProt, or modified variants of one, cannot be created from this client; create
+   those in the ELN's web interface. Samples created there load and save normally, and their
+   protein is sent back exactly as loaded. The protein of an existing sample is read-only here.
+   If either limitation affects your work, please open an issue at
+   https://github.com/Chemotion/chemotionapi/issues and describe what you need.
+
+.. autoclass:: chemotion_api.elements.sbmm_sample.SbmmSample
+    :members:
+
+
+===== docs/ScreenDetails.rst =====
+Screen
+==========
+
+A screen groups wellplates and research plans, for example the plates of one assay campaign.
+Create one with :meth:`chemotion_api.collection.Collection.new_screen`, fetch one with
+:meth:`chemotion_api.Instance.get_screen`, and list them with
+:meth:`chemotion_api.collection.Collection.get_screens`.
+
+``properties`` holds ``name``, ``collaborator``, ``requirements``, ``conditions``, ``result`` and
+``description``. The description is rich text: assign a plain string or a Quill delta (see
+:doc:`Elements`, *Rich text*).
+
+The linked wellplates and research plans are id lists, ``wellplate_ids`` and
+``research_plan_ids``. A save sends these lists as the new links, so they always hold the current
+state, and an empty list removes every link. ``wellplates`` and ``research_plans`` load the
+linked elements.
+
+.. code-block:: python
+
+    plate = col.new_wellplate()
+    plate.save()
+
+    screen = col.new_screen()
+    screen.properties['name'] = 'Kinase panel'
+    screen.properties['conditions'] = '37 °C, 24 h'
+    screen.wellplate_ids.append(plate.id)
+    screen.save()
+
+    screen = instance.get_screen(screen.id)
+    print([w.properties['name'] for w in screen.wellplates])
+
+.. autoclass:: chemotion_api.elements.screen.Screen
+    :members:
+
+
+===== docs/Search.rst =====
+Search
+==========
+
+The advanced search of Chemotion is available for samples (:meth:`chemotion_api.Instance.search_sample`)
+and reactions (:meth:`chemotion_api.Instance.search_reaction`). Conditions are added with
+``add_search_condition``; each condition has a match type and a connector that links it with the
+conditions before it. :meth:`chemotion_api.search.search_helper.SearchHelperBase.request` runs the search
+and returns an :class:`chemotion_api.elements.ElementSet`.
+
+.. code-block:: python
+
+    from chemotion_api.search.utils import EnumMatch, EnumConnector
+
+    samples = (instance.search_sample()
+               .add_search_condition(EnumMatch.LIKE, EnumConnector.OR, name='Ethanol')
+               .add_search_condition(EnumMatch.EXACT, EnumConnector.AND, cas='64-17-5')
+               .find_max(5)
+               .request())
+    for sample in samples:
+        print(sample.short_label)
+
+    reactions = (instance.search_reaction()
+                 .add_search_condition(EnumMatch.BIGGER_THAN, EnumConnector.AND, temperature_in_c=30)
+                 .request())
+
+Conditions are combined with the connector (``AND`` / ``OR``); the connector is applied only
+*between* conditions (the first condition's connector is ignored). Restrict the search to one
+collection with ``in_collection(...)`` and cap the number of results with ``find_max(...)``.
+
+API Classes
+------------
+
+.. autoclass:: chemotion_api.search.sample.SampleSearcher
+    :members:
+    :inherited-members:
+
+.. autoclass:: chemotion_api.search.reaction.ReactionSearcher
+    :members:
+    :inherited-members:
+
+.. autoclass:: chemotion_api.search.search_helper.SearchHelperBase
+    :members: in_collection, find_max, request
+
+Match and connector options
+---------------------------
+
+.. autoenum:: chemotion_api.search.utils.EnumMatch
+
+.. autoenum:: chemotion_api.search.utils.EnumConnector
+
+Structure search
+----------------
+
+Substructure and similarity search over every element type, as the UI's structure search does.
+SMILES, molfiles and molecules are accepted.
+
+.. code-block:: python
+
+    result = instance.search_structure().substructure('c1ccccc1O').find_max(50).request()
+    for sample in result.samples:
+        print(sample.short_label)
+    print(result.total('reaction'))
+    similar = instance.search_structure().similar('CCO', threshold=0.8).request()
+
+.. autoclass:: chemotion_api.search.structure.StructureSearcher
+    :members:
+
+.. autoclass:: chemotion_api.search.structure.StructureSearchResult
+    :members:
+
+
+===== docs/Segments.rst =====
+Segments
+==========
+
+Segments are additional tabs of an element, defined with LabIMotion. All elements, including samples
+and reactions, can have segments. A segment consists of layers, and each layer of fields. The values are
+accessible through the ``segments`` property of an element: ``element.segments[segment][layer][field]``.
+The segment, layer and field names are the labels shown in Chemotion; duplicate names get the suffix
+``.1``, ``.2``, ...
+
+``element.segments`` also contains the keys ``'Properties'`` and ``'Analyses'``, which are the same objects
+as ``element.properties`` and ``element.analyses``.
+
+A segment the element does not have yet is ``None``. Use ``segments.get(name)`` to add it with the default
+values of the template.
+
+.. code-block:: python
+
+    sample = instance.get_sample(1)
+    cell = sample.segments.get('Electrochemistry')['Cell']
+
+    # Look up what a field accepts
+    sample.segments.field_type('Electrochemistry', 'Cell', 'Electrode type')  # 'select'
+    sample.segments.options('Electrochemistry', 'Cell', 'Electrode type')
+    # [{'key': 'traditional', 'label': 'disk'}, {'key': 'mesh', 'label': 'mesh'}]
+    sample.segments.units('Electrochemistry', 'Cell', 'Temperature')  # ['C', 'F', 'K']
+
+    cell['Electrode type'] = 'disk'                      # key or label; stored as key
+    cell['Temperature'] = {'value': 25, 'unit': 'C'}
+    cell['Cycles'] = 3
+    sample.save()
+
+Values by field type
+--------------------
+
+* **select**: the option key. The option label is accepted as well and stored as key.
+* **system-defined**: ``{'value': ..., 'unit': ...}``. A bare number gets the default unit of the field.
+* **integer**: a whole number.
+* **text** and other fields: stored as they are.
+
+Changed select, system-defined and integer values are checked against the template when the element is saved;
+an invalid value raises a ``ValueError``. Values loaded from the server are never rejected, even if they
+do not fit the template anymore.
+
+For segment values in reaction variations, see :doc:`ReactionDetails`.
+
+API Classes
+------------
+
+.. autoclass:: chemotion_api.elements.abstract_element.Segment
+    :members: get, field, field_type, options, units
+
+.. autoclass:: chemotion_api.utils.segment_fields.SegmentField
+    :members:
+
+
+===== docs/WellplateDetails.rst =====
+Wellplate
+==========
+
+.. autoclass:: chemotion_api.elements.wellplate.Wellplate
+    :members:
+
+.. autoclass:: chemotion_api.elements.wellplate.WellplateCol
+
+
+===== docs/index.rst =====
+.. ChemotionAPI documentation master file, created by
+   sphinx-quickstart on Mon Jun 12 12:14:22 2023.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+Welcome to ChemotionAPI's documentation!
+========================================
+
+This is a python api for `Chemotion <https://chemotion.net/>`_. Chemotion is an Electronic Laboratory Notebook (ELN) developed at
+the KIT. Chemotion is a web-based platform designed to help researchers manage and organize their experimental data in a secure and
+efficient manner.
+
+The ChemotionApi Python package is a wrapper for the RESTful API built on top of the Ruby on Rails
+framework that allows users to interact with Chemotion ELN. The package provides a simple and intuitive
+interface for creating, retrieving, updating, and deleting data stored in the ELN using Python. With
+its RESTful architecture and comprehensive documentation, the ChemotionApi allows users to build custom applications and
+workflows that leverage the ELN's capabilities and streamline their research processes.
+
+.. important::
+   **This release requires Chemotion ELN v4.** ELN 3.x and older are not supported: v4 rewrote
+   collections and sharing, renumbered the share permission levels, and removed the
+   ``/syncCollections`` API, so there is no meaningful overlap. Connecting to an older instance
+   raises :class:`~chemotion_api.schema_manager.UnsupportedServerVersion` from
+   :meth:`~chemotion_api.Instance.test_connection` — before any credentials are sent.
+
+   **For an ELN 3.1.x server, use the** ``312.x`` **release line instead.** The package version
+   tracks the server it targets: ``401.x.y`` ↔ ELN 4.0.x (from 4.0.1), ``312.x.y`` ↔ ELN 3.1.2,
+   ``211.x.y`` ↔ ELN 2.1.1.
+
+   This release is tested against ELN **v4.0.2**. ``.eln`` / RO-Crate export is not included.
+
+.. note::
+   **Element types.** Samples, reactions, wellplates, research plans, screens, cell lines, SBMM
+   samples, device descriptions and LabIMotion generic elements can all be created, read, edited
+   and moved between collections. Vessels (templates and instances) have their own classes in
+   :mod:`chemotion_api.vessels`.
+
+   **Acting immediately.** Element edits reach the server on ``save()``. Most other calls — moving,
+   sharing, deleting, splitting, comments, references, exports, imports, reports, inventory data and
+   administration — are sent right away. Deleting templates, users, groups or devices needs the
+   item's label or abbreviation passed back as ``confirm=``.
+
+.. note::
+   **Log in with an API token.** Logging in with a user name and password is deprecated. See
+   :meth:`~chemotion_api.Instance.login_token`.
+
+.. toctree::
+   :maxdepth: 2
+
+   Examples
+   Instance
+   Collection
+   Elements
+   ResearchPlanDetails
+   SampleDetails
+   ReactionDetails
+   WellplateDetails
+   ScreenDetails
+   CellLineDetails
+   SbmmSampleDetails
+   DeviceDescriptionDetails
+   GenericElementsDetails
+   Segments
+   Attachments
+   Analyses
+   MoreElements
+   Search
+   DataExchange
+   LabData
+   Account
+   Admin
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Full API reference (all modules & internal helpers)
+
+   api/modules
+
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`
+
+
