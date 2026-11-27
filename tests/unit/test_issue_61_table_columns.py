@@ -158,3 +158,77 @@ def test_numeric_settings_of_a_number_column_can_be_set():
     for bad, error in [({'decimals': -1}, ValueError), ({'step': 1}, ValueError), ({'min': True}, TypeError)]:
         with pytest.raises(error):
             col.numeric = bad
+
+
+# --- review fixes -----------------------------------------------------------------------------------
+
+@pytest.mark.parametrize('future', [
+    {"id": "x1", "type": "future-column", "value": [], "col_name": "x"},
+    {"id": "x1", "type": "future-column", "col_name": "x", "numeric": {"step": 1}, "refs": "all"},
+])
+def test_an_unknown_column_type_is_kept_whatever_its_values(future):
+    klass = _klass(TEXT, future)
+    assert _saved_columns(klass) == [TEXT, future]
+
+
+@pytest.mark.parametrize('column', [
+    {**NUMBER, 'numeric': {'decimals': '2', 'min': None, 'max': ''}},
+    {**FORMULA, 'refs': [{'id': 'n1', 'abbr': 'a', 'label': 'mass'}]},
+])
+def test_settings_the_setters_refuse_are_kept_as_stored(column):
+    assert _saved_columns(_klass(column)) == [column]
+
+
+def test_refs_take_valid_unique_abbrs_and_not_the_column_itself():
+    calc = _new_table().add_subfield(SubTableFieldType.FORMULA_FIELD, 'calc')
+    for refs in ([{'id': 'n1', 'abbr': '1x'}], [{'id': 'n1', 'abbr': 'a b'}],
+                 [{'id': 'n1', 'abbr': 'a'}, {'id': 'n2', 'abbr': 'a'}]):
+        with pytest.raises(ValueError):
+            calc.refs = refs
+    with pytest.raises(ValueError):
+        calc.add_ref(calc, 'c')
+    with pytest.raises(ValueError):
+        calc.decimal = '²'
+
+
+def test_numeric_bounds_are_numbers_and_min_is_not_above_max():
+    col = _new_table().add_subfield(SubTableFieldType.NUMBER, 'mass')
+    for bad in ({'min': 'abc'}, {'min': 5, 'max': '1'}):
+        with pytest.raises(ValueError):
+            col.numeric = bad
+    col.numeric = {'min': '', 'max': '2,5'}
+
+
+def test_to_dict_does_not_share_the_columns_settings():
+    table = _new_table()
+    num = table.add_subfield(SubTableFieldType.NUMBER, 'mass')
+    num.numeric = {'decimals': 1}
+    num.to_dict()['numeric']['decimals'] = 9
+    calc = table.add_subfield(SubTableFieldType.FORMULA_FIELD, 'calc').add_ref(num, 'm')
+    calc.to_dict()['refs'][0]['abbr'] = 'x'
+    assert (num.numeric, calc.refs) == ({'decimals': 1}, [{'id': num.id, 'abbr': 'm'}])
+
+
+@pytest.mark.parametrize('bad', [{'min': None}, {'max': None}, {'decimals': None}])
+def test_numeric_settings_are_never_written_as_null(bad):
+    col = _new_table().add_subfield(SubTableFieldType.NUMBER, 'mass')
+    with pytest.raises(TypeError):
+        col.numeric = bad
+
+
+def test_an_unknown_column_without_col_name_round_trips_exactly():
+    future = {"id": "x1", "type": "future-column"}
+    assert _saved_columns(_klass(future)) == [future]
+
+
+def test_the_numeric_settings_of_an_input_group_number_are_kept():
+    with open(FIXTURE) as f:
+        data = json.load(f)
+    group = {'type': 'input-group', 'field': 'grp', 'label': 'grp', 'default': '', 'position': 98,
+             'required': False, 'text_sub_fields': [],
+             'sub_fields': [{'id': 's1', 'type': 'number', 'value': '1',
+                             'numeric': {'decimals': 2, 'min': '', 'max': ''}}]}
+    for where in ('properties_template', 'properties_release'):
+        data[where]['layers'][LAYER]['fields'].append(copy.deepcopy(group))
+    fields = GenericElementKlass(data, None).to_dict()['properties_template']['layers'][LAYER]['fields']
+    assert next(f for f in fields if f['field'] == 'grp')['sub_fields'] == group['sub_fields']
