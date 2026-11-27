@@ -386,13 +386,18 @@ class GenericManager:
         :return: the new template
         :raises ValueError: if ``label`` is the label of a built-in element type ('Sample', 'Research Plan',
             ...; case, spaces and underscores ignored). The ELN accepts such a label without an error, and
-            the new type is then hard to tell apart from the built-in one.
+            the new type is then hard to tell apart from the built-in one. Likewise if ``name`` is the
+            name of a built-in type ('sample', ...): ELN 4.0.2's klass listing omits Sample, so the
+            taken-name check below cannot see it.
         """
         all_elements = self.load_all_elements()
         clash = _built_in_label(label, all_elements)
         if clash is not None:
             raise ValueError(f'"{label}" is the label of the built-in element type "{clash}". '
                              f'Choose another label, e.g. "{label} (generic)".')
+        clash = _built_in_label(name, all_elements) if name else None
+        if clash is not None:
+            raise ValueError(f'"{name}" is the name of the built-in element type "{clash}". Choose another name.')
         all_names = [x.name for x in all_elements]
         if name == '':
             name = t_name = re.sub(r'[^a-z]', '', label.lower())[:4]

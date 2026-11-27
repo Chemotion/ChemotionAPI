@@ -215,3 +215,106 @@ def test_a_field_of_a_known_type_still_may_not_carry_unknown_keys():
     from jsonschema import ValidationError
     with pytest.raises(ValidationError, match='bogus'):
         GenericElementKlass(_payload({'type': 'text', 'field': 't', 'bogus': 1}), None)
+
+
+# --- review follow-ups -----------------------------------------------------------------------------
+
+def test_value_system_base_follows_a_change_of_unit_type_or_unit():
+    """As the designer does: a base unit never names a unit of another unit type."""
+    _, layer = _new_layer()
+    sf = layer.add_field(FieldType.SYSTEM_DEFINED, 'T')
+    sf.option_layers = FieldUnit.TEMPERATURE
+    sf.value_system_base = 'K'
+    sf.value_system = 'C'
+    assert sf.value_system_base == 'C'
+    sf.option_layers = FieldUnit.MASS
+    assert sf.value_system_base == sf.value_system
+    assert sf.to_dict()['value_system_base'] == sf.value_system
+
+
+def test_a_stored_value_system_base_is_kept_while_loading():
+    stored = dict(SYSTEM_DEFINED, value_system='K', value_system_base='C')
+    klass = GenericElementKlass(_payload(stored), None)
+    assert _field(klass, 'temp').value_system_base == 'C'
+
+
+def test_a_formula_may_use_a_number_field():
+    """The designer turns integer fields into number fields, so formulas reference those."""
+    _, layer = _new_layer()
+    count = layer.add_field(FieldType.NUMBER, 'Count')
+    formula = layer.add_field(FieldType.FORMULA_FIELD, 'Twice')
+    formula.formula = f'{count.field}*2'
+    assert formula.formula == f'{count.field}*2'
+
+
+DESIGNER_KEYS = {'value': 3.5, 'placeholder': 'n', 'readonly': True, 'hasOwnRow': True}
+
+
+@pytest.mark.parametrize('field', [NUMBER, ONTOLOGY_SELECT, SYSTEM_DEFINED])
+def test_keys_the_designer_writes_survive_a_save(field):
+    klass = GenericElementKlass(_payload(dict(field, **DESIGNER_KEYS)), None)
+    for _ in range(2):  # save() serializes more than once
+        saved = _saved(klass, field['field'])
+        assert {k: saved.get(k) for k in DESIGNER_KEYS} == DESIGNER_KEYS
+
+
+def test_a_removed_numeric_is_not_restored_from_the_payload():
+    klass = GenericElementKlass(_payload(NUMBER), None)
+    _field(klass, 'count').numeric = None
+    assert 'numeric' not in _saved(klass, 'count')
+
+
+def test_an_unknown_field_type_survives_every_save():
+    future = {'type': 'future-widget', 'field': 'w', 'widget_options': {'a': 1}}
+    klass = GenericElementKlass(_payload(future), None)
+    _saved(klass, 'w')
+    assert _saved(klass, 'w')['widget_options'] == {'a': 1}
+
+
+def test_a_gem_type_kept_opaque_may_carry_its_own_keys():
+    klass = GenericElementKlass(_payload({'type': 'sys-reaction', 'field': 'r', 'reaction_opts': 1}), None)
+    assert _saved(klass, 'r')['reaction_opts'] == 1
+
+
+def test_numeric_cannot_be_changed_past_its_validation():
+    _, layer = _new_layer()
+    field = layer.add_field(FieldType.NUMBER, 'Count')
+    field.numeric = {'decimals': 1}
+    field.numeric['decimals'] = -5
+    assert field.to_dict()['numeric'] == {'decimals': 1}
+
+
+def test_an_unknown_ontology_term_id_raises_value_error(monkeypatch):
+    def not_found(term_id):
+        raise KeyError(term_id)
+    monkeypatch.setattr(F, 'get_term', not_found)
+    _, layer = _new_layer()
+    field = layer.add_field(FieldType.ONTOLOGY_SELECT, 'Assay')
+    with pytest.raises(ValueError):
+        field.ontology_term = 'XYZ:0000001'
+
+
+class _Klass:
+    def __init__(self, name, label, is_generic):
+        self.name, self.label, self.is_generic = name, label, is_generic
+
+
+def test_the_server_s_built_in_klasses_count_as_built_in():
+    from chemotion_api.labImotion import _built_in_label
+    klasses = [_Klass('vessel', 'Vessel', False), _Klass('mbio', 'Micro Biology', True)]
+    assert _built_in_label('vessel', klasses) == 'Vessel'
+    assert _built_in_label('Micro Biology', klasses) is None
+
+
+def test_an_integer_field_keeps_numeric():
+    """The designer adds ``numeric`` to integer fields too."""
+    integer = {'type': 'integer', 'field': 'n_int', 'numeric': {'decimals': 0, 'min': '', 'max': ''}}
+    klass = GenericElementKlass(_payload(integer), None)
+    assert _field(klass, 'n_int').numeric == integer['numeric']
+    assert _saved(klass, 'n_int')['numeric'] == integer['numeric']
+
+
+def test_a_name_of_a_built_in_type_is_refused(monkeypatch):
+    monkeypatch.setattr(GenericElementKlass, 'load_all', classmethod(lambda cls, con, strict=False: []))
+    with pytest.raises(ValueError, match='built-in'):
+        GenericManager(_NoCreate()).create_new_element('My samples', 'leaf', name='sample')
