@@ -3,6 +3,9 @@ from chemotion_api.labImotion.items.validation.registry import SchemaRegistry
 
 #: Types of input-group sub-fields and table columns this client models.
 _KNOWN_SUB_FIELD_TYPES = sorted(set(SubFieldType.list()) | set(SubTableFieldType.list()))
+#: Field types the client keeps as an OpaqueField although FieldType names them.
+_OPAQUE_FIELD_TYPES = {FieldType.DATE.value, FieldType.WF_NEXT.value, FieldType.SYS_REACTION.value,
+                       FieldType.DRAG.value, FieldType.DRAG_REACTION.value}
 
 generic_schema = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -216,8 +219,10 @@ generic_schema = {
     # A field of a known type may carry only the keys above (a key the server starts sending
     # fails loudly, see tests/unit/test_klass_schema_fields.py). A field of a type this client
     # does not know may carry any keys: it is kept as an OpaqueField, which round-trips them.
+    # The gem-declared types without a class of their own (see the end of _field_factory) are
+    # OpaqueFields as well, so they count as unknown here.
     "unevaluatedProperties": False,
-    "if": {"properties": {"type": {"enum": FieldType.list()}}},
+    "if": {"properties": {"type": {"enum": [t for t in FieldType.list() if t not in _OPAQUE_FIELD_TYPES]}}},
     "else": {"additionalProperties": True},
     # sub_fields / text_sub_fields dropped from required: v4 emits them only for the field types
     # that actually have sub-fields (2609 of 2792 fields in the reference instance carry them).
