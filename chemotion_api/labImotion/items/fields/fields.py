@@ -7,6 +7,7 @@ from chemotion_api.labImotion.items.fields.sub_fields import SubBaseField, Numbe
 from chemotion_api.labImotion.items.fields.table_sub_fields import TableSubBaseField, TSDragMolecule, TSDragSample, \
     TSSelect, TSSystemDefined, TSText
 from chemotion_api.labImotion.items.options import FieldType, FieldUnit, get_unit, SubFieldType, SubTableFieldType
+from chemotion_api.labImotion.ontology import get_term
 from chemotion_api.labImotion.structure import StructureRegistry
 
 
@@ -249,11 +250,123 @@ class OpaqueField(BaseField):
 class SystemDefinedField(BaseField, SystemDefined):
     field_type = FieldType.SYSTEM_DEFINED
     required_fields = ['option_layers', 'value_system']
+    optional_fields = ['value_system_base']
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         super().__init__(sr, layer_key, json_data)
         SystemDefined.__init__(self, json_data)
+        self._value_system_base: str | None = None
         self._parse_json()
+
+    @property
+    def value_system_base(self) -> str | None:
+        """The base unit of the field, a unit key of ``option_layers``, or None.
+
+        The ELN's template designer fills it in for system-defined fields that have none
+        (chem-generic-ui backfills it from ``value_system``); this client keeps what is stored and
+        never invents it.
+        """
+        return self._value_system_base
+
+    @value_system_base.setter
+    def value_system_base(self, value: str | None):
+        if value is None:
+            self._value_system_base = None
+            return
+        if not isinstance(value, str):
+            raise TypeError(f"value_system_base {type(value)} not supported")
+        available_units = get_unit(self.option_layers)
+        if value not in available_units:
+            raise ValueError(f"value_system_base {value} must be in {available_units}")
+        self._value_system_base = value
+
+
+class NumericField(BaseField):
+    """The ``number`` field type: a number with optional ``numeric`` settings.
+
+    ``numeric`` is ``{'decimals': int >= 0, 'min': number | str, 'max': number | str}``, every key
+    optional, as the ELN's template designer stores it.
+    """
+    field_type = FieldType.NUMBER
+    optional_fields = ['numeric']
+    _NUMERIC_KEYS = ('decimals', 'min', 'max')
+
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        self._numeric: dict | None = None
+        self._parse_json()
+
+    @property
+    def numeric(self) -> dict | None:
+        return self._numeric
+
+    @numeric.setter
+    def numeric(self, value: dict | None):
+        if value is None:
+            self._numeric = None
+            return
+        if not isinstance(value, dict):
+            raise TypeError(f"numeric {type(value)} not supported")
+        unknown = set(value) - set(self._NUMERIC_KEYS)
+        if unknown:
+            raise ValueError(f"numeric takes only {list(self._NUMERIC_KEYS)}, not {sorted(unknown)}")
+        decimals = value.get('decimals')
+        if decimals is not None:
+            if isinstance(decimals, bool) or not isinstance(decimals, int):
+                raise TypeError(f"numeric decimals {type(decimals)} not supported, use an int")
+            if decimals < 0:
+                raise ValueError("numeric decimals must be 0 or more")
+        for key in ('min', 'max'):
+            bound = value.get(key)
+            if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int | float | str)):
+                raise TypeError(f"numeric {key} {type(bound)} not supported, use a number or str")
+        self._numeric = dict(value)
+
+
+class OntologySelectField(BaseField):
+    """The ``ontology-select`` field type: a choice among the terms below ``ontology_term``.
+
+    The ELN's template designer stores the root term as ``{'value': <TIB term id>, 'label': <label>}``,
+    e.g. ``{'value': 'obi:class:http://purl.obolibrary.org/obo/OBI_0000070', 'label': 'assay'}``.
+    """
+    field_type = FieldType.ONTOLOGY_SELECT
+    optional_fields = ['ontology_term']
+
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        # Kept as stored, not through the setter: a string would be looked up online while
+        # loading, and the designer also reads the older string forms ('<onto>|<iri>', an IRI).
+        self._ontology_term: dict | str | None = json_data.get('ontology_term') or None
+        self._json_data = {k: v for k, v in json_data.items() if k != 'ontology_term'}
+        self._parse_json()
+        self._json_data = json_data
+
+    @property
+    def ontology_term(self) -> dict | str | None:
+        """The root term, or None. It can be set to a term ID ('OBI:0000070', a short form or the
+        IRI, looked up in the TIB Terminology Service like :attr:`ontology`), to a term dict (e.g.
+        from :meth:`GenericManager.search_ontology_terms`), to ``{'value', 'label'}`` as stored, or
+        to None to remove it. A plain string read from the server is kept as it is."""
+        return self._ontology_term
+
+    @ontology_term.setter
+    def ontology_term(self, value: dict | str | None):
+        if value is None or value == {}:
+            self._ontology_term = None
+        elif isinstance(value, str):
+            term = get_term(value)
+            if term is None:
+                raise ValueError(f"unknown ontology term {value!r}")
+            self._ontology_term = {'value': term['id'], 'label': term.get('label') or term['id']}
+        elif isinstance(value, dict):
+            if 'id' in value:       # a TIB term
+                self._ontology_term = {'value': value['id'], 'label': value.get('label') or value['id']}
+            elif 'value' in value:  # as the designer stores it
+                self._ontology_term = {'value': value['value'], 'label': value.get('label') or value['value']}
+            else:
+                raise ValueError("ontology_term needs an 'id' (a term) or a 'value' (as stored)")
+        else:
+            raise TypeError(f"ontology_term {type(value)} not supported")
 
 
 class TableField(BaseField):

@@ -45,6 +45,15 @@ class Select:
     def option_layers(self, value: str | None):
         self._set_option_layers(value, strict=True)
 
+    def options(self) -> list[dict[str, str]]:
+        """The options of the field's option list, as ``[{'key': ..., 'label': ...}]``.
+
+        Empty if the field is not linked to an option list, or to one the template does not
+        define. Add or change options with ``properties.add_select_option(key, values)``.
+        """
+        return [{'key': key, 'label': label}
+                for key, label in self._sr.get_select_options().get(self.option_layers or '', {}).items()]
+
     def _set_option_layers(self, value: str | None, strict: bool):
         options = self._sr.get_select_options_list()
         if value is None:

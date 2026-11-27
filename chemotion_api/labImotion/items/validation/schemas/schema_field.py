@@ -21,9 +21,12 @@ generic_schema = {
                 }
             ]
         },
+        # Any string, not FieldType.list(): a type this client has no class for is kept as an
+        # OpaqueField and round-trips. An enum here rejected the whole klass instead, and every
+        # element using it became unreadable (issue #58: 'number', 'ontology-select').
         "type": {
             "type": "string",
-            "enum": FieldType.list()
+            "minLength": 1
         },
         "field": {
             "type": "string"
@@ -144,6 +147,24 @@ generic_schema = {
         "value_system": {
             "type": "string"
         },
+        # Written by the ELN's template designer (chem-generic-ui, ELN 4.0.2), issue #58: the base
+        # unit it backfills on system-defined fields, the settings of a 'number' field and the
+        # root term of an 'ontology-select' field. Shapes as in the designer's own field schema.
+        "value_system_base": {
+            "type": "string"
+        },
+        "numeric": {
+            "type": "object",
+            "properties": {
+                "decimals": {"type": "integer", "minimum": 0},
+                "min": {"type": ["number", "string"]},
+                "max": {"type": ["number", "string"]}
+            },
+            "additionalProperties": False
+        },
+        "ontology_term": {
+            "type": ["object", "string", "null"]
+        },
         # ELN v4 / LabIMotion 2.3 additions.
         "placeholder": {
             "type": ["string", "null"]
@@ -158,7 +179,12 @@ generic_schema = {
             "type": ["string", "number", "boolean", "object", "array", "null"]
         }
     },
-    "additionalProperties": False,
+    # A field of a known type may carry only the keys above (a key the server starts sending
+    # fails loudly, see tests/unit/test_klass_schema_fields.py). A field of a type this client
+    # does not know may carry any keys: it is kept as an OpaqueField, which round-trips them.
+    "unevaluatedProperties": False,
+    "if": {"properties": {"type": {"enum": FieldType.list()}}},
+    "else": {"additionalProperties": True},
     # sub_fields / text_sub_fields dropped from required: v4 emits them only for the field types
     # that actually have sub-fields (2609 of 2792 fields in the reference instance carry them).
     # Everything below is present on every field observed, so it stays required.
