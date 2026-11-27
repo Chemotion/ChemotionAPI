@@ -2,14 +2,15 @@ import uuid
 import re
 from enum import Enum
 
-from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined
+from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined, _report_unknown_unit as _report_unknown_value
 from chemotion_api.labImotion.items.options import SubFieldType, FieldUnit, get_unit
 from chemotion_api.labImotion.structure import StructureRegistry
 from chemotion_api.labImotion.utils import ChemotionSerializable
 
 
 #: A number as the designer's number input accepts it (HTML ``type="number"``): sign, decimals, exponent.
-NUMBER_PATTERN = re.compile(r'[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?')
+#: ASCII digits only: ``\d`` would also take digits such as '١٢' or '１２', which no number input sends.
+NUMBER_PATTERN = re.compile(r'[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?')
 
 
 class SubBaseField(ChemotionSerializable):
@@ -23,7 +24,14 @@ class SubBaseField(ChemotionSerializable):
         self._sr = sr
         self._layer_key = layer_key
         self._id = json_data.get("id", uuid.uuid4().__str__())
-        self.value = json_data.get("value", self.default)
+        value = json_data.get("value", self.default)
+        try:
+            self.value = value
+        except ValueError as e:
+            # A loaded value the setter refuses (e.g. '1.2.3', which older clients accepted) is kept
+            # verbatim, as BaseField._parse_json does: raising would make the whole field unreadable.
+            self._value = value
+            _report_unknown_value(f"{type(self).__name__}.value rejected the server's value {value!r} ({e})")
 
     def to_dict(self):
         json_dict = {}
