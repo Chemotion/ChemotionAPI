@@ -298,6 +298,8 @@ system_field.value_system_base                                     # kept as the
 field.label / .required / .default                                 # stored in the template
 field.ontology = 'CHMO:0000593' | term_dict | None                 # ontology term; ID looked up online (TIB TS)
 layer.add_field(FieldType.TEXT, 'NMR method', ontology='CHMO:0000593')
+table.add_subfield(SubTableFieldType.NUMBER | SELECT_MULTI | FORMULA_FIELD | TEXT | SELECT | ..., col_name)
+calc.add_ref(column_or_id, 'm'); calc.formula = 'm/n'; calc.decimal = 2   # formula column; refs [{'id', 'abbr'}]
 gm.search_ontology_terms('nmr', rows=30) -> [term]                 # same search as the template designer
 gm.get_ontology_term(obo_id | short_form | iri) -> term            # KeyError if unknown
     # term: {'iri', 'label', 'obo_id', 'short_form', 'ontology_prefix', 'ontology_name', 'description', 'id', 'type'}

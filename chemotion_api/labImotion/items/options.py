@@ -28,6 +28,10 @@ class SubTableFieldType(ListableEnum):
     SELECT = "select"
     SYSTEM_DEFINED = 'system-defined'
     TEXT = 'text'
+    #: The three below are offered by the template designer of ELN 4.0 (chem-generic-ui), not by 3.1.
+    FORMULA_FIELD = 'formula-field'
+    NUMBER = 'number'
+    SELECT_MULTI = 'select-multi'
 
 
 class FieldType(ListableEnum):

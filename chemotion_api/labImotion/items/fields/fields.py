@@ -5,7 +5,7 @@ from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined,
 from chemotion_api.labImotion.items.fields.sub_fields import SubBaseField, NumberField, TextField as SubTextField, \
     SystemDefinedField as SubSystemDefinedField, LabelField
 from chemotion_api.labImotion.items.fields.table_sub_fields import TableSubBaseField, TSDragMolecule, TSDragSample, \
-    TSSelect, TSSystemDefined, TSText
+    TSSelect, TSSystemDefined, TSText, TSNumber, TSSelectMulti, TSFormula, TSOpaque
 from chemotion_api.labImotion.items.options import FieldType, FieldUnit, get_unit, SubFieldType, SubTableFieldType
 from chemotion_api.labImotion.ontology import get_term
 from chemotion_api.labImotion.structure import StructureRegistry
@@ -390,6 +390,10 @@ class TableField(BaseField):
             elif isinstance(entry, dict) and entry.get('type') in SubTableFieldType.list():
                 sf_type = SubTableFieldType(entry['type'])
                 new_val.append(self._factory_subfield(sf_type, entry))
+            elif isinstance(entry, dict) and isinstance(entry.get('type'), str):
+                # A column type this client does not know (issue #61): keep that column as it is,
+                # rather than leaving the whole table untyped.
+                new_val.append(TSOpaque(self._sr, self._layer_key, entry))
             else:
                 raise TypeError("Value entries must be of type SubBaseField or dict")
 
@@ -415,6 +419,12 @@ class TableField(BaseField):
             return TSSystemDefined(self._sr, self._layer_key, data)
         elif sf_type == SubTableFieldType.TEXT:
             return TSText(self._sr, self._layer_key, data)
+        elif sf_type == SubTableFieldType.NUMBER:
+            return TSNumber(self._sr, self._layer_key, data)
+        elif sf_type == SubTableFieldType.SELECT_MULTI:
+            return TSSelectMulti(self._sr, self._layer_key, data)
+        elif sf_type == SubTableFieldType.FORMULA_FIELD:
+            return TSFormula(self._sr, self._layer_key, data)
 
 
 class TextFormulaField(BaseField):
