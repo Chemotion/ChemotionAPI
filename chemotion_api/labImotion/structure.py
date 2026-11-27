@@ -18,14 +18,14 @@ class StructureRegistry:
     def get_properties(self) -> GenericProperties | None:
         return self._obj().properties
 
-    def get_structure(self) -> dict[str, dict[str, FieldType]]:
+    def get_structure(self) -> dict[str, dict[str, FieldType | str]]:
         res = {}
         props = self.get_properties()
         if props is None:
             for _, layer in self._obj()._json_data['properties_template']['layers'].items():
                 res[layer['key']] = {}
                 for field in layer['fields']:
-                    res[layer['key']][field['field']] = FieldType(field['type'])
+                    res[layer['key']][field['field']] = _field_type(field['type'])
         else:
             layers = props.layers
             for l in layers:
@@ -50,3 +50,12 @@ class StructureRegistry:
         else:
             select_items = props.select_options
         return {key: {o['key']:o['label'] for o in val['options']} for key, val in select_items.items()}
+
+
+def _field_type(raw: str) -> FieldType | str:
+    """The FieldType of a stored field, or the raw string for a type this client does not know
+    (such a field is kept as an OpaqueField)."""
+    try:
+        return FieldType(raw)
+    except ValueError:
+        return raw

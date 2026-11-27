@@ -287,9 +287,14 @@ Authoring a template (admin; `FieldType` from `labImotion.items.fields`, `SaveAc
 ```
 k = gm.create_new_element(label, icon_name, description='', prefix='', name='', release=True, activate=True)
     # -> the new GenericElementKlass; release/activate make it usable right away (empty v0.1)
+    # ValueError for the label of a built-in type ('Sample', 'Research Plan', ...)
 layer = k.properties.add_new_layer(label, key='', idx=-1)          # key generated from label; ValueError if taken
 layer.add_field(FieldType.X, label, field='', idx=-1, options=None) # options=[...] only for SELECT
 k.properties.add_select_option(key, values) -> key                 # shared list; link via field.option_layers = key
+select_field.options() -> [{'key', 'label'}]                       # the options of its list; all: k.properties.select_options
+number_field.numeric = {'decimals': 0, 'min': 0, 'max': 100}       # FieldType.NUMBER; every key optional
+onto_select.ontology_term = 'OBI:0000070' | term_dict | None       # FieldType.ONTOLOGY_SELECT; stored {'value', 'label'}
+system_field.value_system_base                                     # kept as the web UI writes it, never added
 field.label / .required / .default                                 # stored in the template
 field.ontology = 'CHMO:0000593' | term_dict | None                 # ontology term; ID looked up online (TIB TS)
 layer.add_field(FieldType.TEXT, 'NMR method', ontology='CHMO:0000593')

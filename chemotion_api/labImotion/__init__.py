@@ -13,6 +13,7 @@ from chemotion_api.labImotion.items.validation import validate_generic_element, 
 from chemotion_api.labImotion.base_generic_obj import GenericObj
 from chemotion_api.connection import Connection, request_error
 from chemotion_api.element_manager import ElementManager
+from chemotion_api.elements.registry import registered_element_types
 from urllib.parse import urlparse, unquote
 
 
@@ -154,6 +155,24 @@ class GenericDataset(GenericObj):
 #: The REST resource of each template kind, for the hub routes.
 _KIND_RESOURCE = {ElementType.ELEMENT: 'generic_elements', ElementType.SEGMENT: 'segments',
                   ElementType.DATASET: 'generic_dataset'}
+
+
+def _built_in_label(label: str, klasses: list) -> str | None:
+    """The built-in element type whose label (or name) ``label`` matches, or None.
+
+    Compared without case, spaces and underscores, so 'research plan' matches 'Research Plan'
+    and 'research_plan'. The built-in types come from this client's element registry (which
+    has 'sample'; ELN 4.0.2's klass listing does not) and from the server's non-generic klasses.
+    """
+    def norm(text: str) -> str:
+        return re.sub(r'[^a-z0-9]', '', (text or '').lower())
+
+    built_in = {norm(name): name.replace('_', ' ').title() for name in registered_element_types()}
+    for klass in klasses:
+        if not klass.is_generic:
+            built_in[norm(klass.label)] = klass.label
+            built_in[norm(klass.name)] = klass.label
+    return built_in.get(norm(label))
 
 
 class GenericManager:
@@ -365,8 +384,15 @@ class GenericManager:
             for creating elements
         :param activate: if True, the template is activated. Inactive templates are hidden from users
         :return: the new template
+        :raises ValueError: if ``label`` is the label of a built-in element type ('Sample', 'Research Plan',
+            ...; case, spaces and underscores ignored). The ELN accepts such a label without an error, and
+            the new type is then hard to tell apart from the built-in one.
         """
         all_elements = self.load_all_elements()
+        clash = _built_in_label(label, all_elements)
+        if clash is not None:
+            raise ValueError(f'"{label}" is the label of the built-in element type "{clash}". '
+                             f'Choose another label, e.g. "{label} (generic)".')
         all_names = [x.name for x in all_elements]
         if name == '':
             name = t_name = re.sub(r'[^a-z]', '', label.lower())[:4]
