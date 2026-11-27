@@ -34,7 +34,7 @@ def test_an_empty_value_clears_the_number(number):
     assert number.to_dict()['value'] == ''
 
 
-@pytest.mark.parametrize('value', ['...', '.', '1.2.3', '1-2', '1e', 'e3', '--1', 'abc', 'nan', 'inf', ' 1', '1\n'])
+@pytest.mark.parametrize('value', ['...', '.', '1.2.3', '1-2', '1e', 'e3', '--1', 'abc', 'nan', 'inf', ' 1', '1\n', '١٢', '１２'])
 def test_text_that_is_not_a_number_is_refused(number, value):
     with pytest.raises(ValueError):
         number.value = value
@@ -43,3 +43,9 @@ def test_text_that_is_not_a_number_is_refused(number, value):
 def test_a_bool_is_refused(number):
     with pytest.raises(TypeError):
         number.value = True
+
+
+def test_a_loaded_value_the_setter_refuses_is_kept(number):
+    """Older clients accepted values such as '1.2.3'; a template holding one still loads."""
+    loaded = type(number)(number._sr, number._layer_key, {'id': 'x', 'value': '1.2.3'})
+    assert loaded.value == '1.2.3'

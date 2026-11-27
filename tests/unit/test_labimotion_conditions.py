@@ -43,6 +43,13 @@ def test_a_select_condition_refuses_a_value_that_is_neither_key_nor_label(klass)
     assert target.cond_fields is None
 
 
+def test_a_select_condition_on_a_missing_option_list_raises_value_error(klass):
+    select, target = _select_and_target(klass)
+    select._option_layers = 'gone'
+    with pytest.raises(ValueError, match='gone'):
+        target.add_condition(select, 'LB broth')
+
+
 def test_the_conditions_of_a_field_can_be_cleared(klass):
     select, target = _select_and_target(klass)
     target.add_condition(select, 'lb_broth')
