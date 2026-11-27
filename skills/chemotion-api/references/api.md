@@ -442,9 +442,9 @@ ResearchPlan: .metadata() / .save_metadata(**fields) / .upload_svg(svg, is_chemd
 ## 19. More element types
 
 ```
-Screen        col.new_screen(); .add_wellplate(p) / .remove_wellplate(p) / .add_research_plan(rp)
-              .new_research_plan(collection); properties: name, collaborator, requirements,
-              conditions, result, description, wellplates, research_plans
+Screen        col.new_screen(); links are id lists .wellplate_ids / .research_plan_ids (a save sends
+              them as the new state; [] removes every link); .wellplates / .research_plans load the
+              linked elements; properties: name, collaborator, requirements, conditions, result, description
 CellLine      col.new_cell_line(material_name, source); .material is the shared cell line material
               (edits check who owns it); see docs/CellLineDetails.rst
 DeviceDescription  col.new_device_description(); a rejected create raises ValueError
