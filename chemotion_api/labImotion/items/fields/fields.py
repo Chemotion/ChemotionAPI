@@ -125,8 +125,9 @@ class FormulaFieldField(BaseField):
             try:
                 float(variable)
             except ValueError:
-                if structure.get(variable) not in [FieldType.INTEGER, FieldType.SYSTEM_DEFINED]:
-                    raise ValueError(f"Only numbers (integer or floating '12.3'), field names of {FieldType.INTEGER} or {FieldType.SYSTEM_DEFINED} in the same layer or operations like addition (+), subtraction (-), multiplication (*), and division (/)")
+                # NUMBER too: the template designer turns every INTEGER field into a NUMBER field.
+                if structure.get(variable) not in [FieldType.INTEGER, FieldType.NUMBER, FieldType.SYSTEM_DEFINED]:
+                    raise ValueError(f"Only numbers (integer or floating '12.3'), field names of {FieldType.INTEGER}, {FieldType.NUMBER} or {FieldType.SYSTEM_DEFINED} in the same layer or operations like addition (+), subtraction (-), multiplication (*), and division (/)")
 
         self._formula = value
 
@@ -177,11 +178,49 @@ class InputGroupField(BaseField):
             return SubSystemDefinedField(self._sr, self._layer_key, data)
 
 
-class IntegerField(BaseField):
+class NumericSettings:
+    """``numeric`` of a ``number`` or ``integer`` field: ``{'decimals': int >= 0, 'min': number | str,
+    'max': number | str}``, every key optional, as the ELN's template designer stores it. The
+    designer adds it to both types (chem-generic-ui, ELN 4.0.2), so both must keep it on save.
+    """
+    _NUMERIC_KEYS = ('decimals', 'min', 'max')
+    _numeric: dict | None = None
+
+    @property
+    def numeric(self) -> dict | None:
+        """A copy of the settings; assign a new dict to change them (it is validated)."""
+        return dict(self._numeric) if self._numeric is not None else None
+
+    @numeric.setter
+    def numeric(self, value: dict | None):
+        if value is None:
+            self._numeric = None
+            return
+        if not isinstance(value, dict):
+            raise TypeError(f"numeric {type(value)} not supported")
+        unknown = set(value) - set(self._NUMERIC_KEYS)
+        if unknown:
+            raise ValueError(f"numeric takes only {list(self._NUMERIC_KEYS)}, not {sorted(unknown)}")
+        decimals = value.get('decimals')
+        if decimals is not None:
+            if isinstance(decimals, bool) or not isinstance(decimals, int):
+                raise TypeError(f"numeric decimals {type(decimals)} not supported, use an int")
+            if decimals < 0:
+                raise ValueError("numeric decimals must be 0 or more")
+        for key in ('min', 'max'):
+            bound = value.get(key)
+            if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int | float | str)):
+                raise TypeError(f"numeric {key} {type(bound)} not supported, use a number or str")
+        self._numeric = dict(value)
+
+
+class IntegerField(BaseField, NumericSettings):
     field_type = FieldType.INTEGER
+    optional_fields = ['numeric']
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         super().__init__(sr, layer_key, json_data)
+        self._numeric: dict | None = None
         self._parse_json()
 
 
@@ -212,7 +251,31 @@ class SelectMultiField(BaseField, Select):
         self._parse_json()
 
 
-class OpaqueField(BaseField):
+class _KeepsUnmodelledKeys:
+    """Mixin for a field class that must not drop keys of the server's payload it does not model.
+
+    :meth:`BaseField.to_dict` rebuilds a field from its declared keys only and replaces
+    ``_json_data`` with that rebuild, so a key the class does not declare (``value``,
+    ``placeholder``, ``readonly``, ``hasOwnRow``, ... as the template designer writes them) is
+    lost on the first save, and on every ``to_dict()`` after the first. The payload is therefore
+    kept separately, and its unmodelled keys are merged under the rebuilt field. Keys the class
+    declares are never taken from it, so setting one to None still removes it.
+    """
+
+    def _keep_source(self, json_data: dict):
+        self._source_json = dict(json_data)
+
+    def to_dict(self) -> dict:
+        rebuilt = super().to_dict()  # type: ignore[misc]
+        declared = (self._default_required_fields + self.required_fields  # type: ignore[attr-defined]
+                    + self._default_optional_fields + self.optional_fields)  # type: ignore[attr-defined]
+        managed = {self.mapping.get(key, key) for key in declared}  # type: ignore[attr-defined]
+        kept = {key: value for key, value in getattr(self, '_source_json', {}).items() if key not in managed}
+        self._json_data = kept | rebuilt
+        return self._json_data
+
+
+class OpaqueField(_KeepsUnmodelledKeys, BaseField):
     """Fallback for a field type this client has no dedicated class for.
 
     Keeps the payload intact so the klass loads AND round-trips, instead of making the whole
@@ -227,12 +290,8 @@ class OpaqueField(BaseField):
     anything.
     """
 
-    def to_dict(self) -> dict:
-        """The rebuilt field merged *over* the original payload, so unknown keys survive a save.
-
-        :return: the field as a ``dict``, retaining every key the server sent.
-        """
-        return dict(self._json_data) | super().to_dict()
+    # to_dict() comes from _KeepsUnmodelledKeys: the rebuilt field merged over the original
+    # payload, kept apart from _json_data so the unknown keys survive every save, not just the first.
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         # field_type is per-instance here: one class stands in for several wire types, and for
@@ -244,10 +303,11 @@ class OpaqueField(BaseField):
         except ValueError:
             self.field_type = raw_type
         super().__init__(sr, layer_key, json_data)
+        self._keep_source(json_data)
         self._parse_json()
 
 
-class SystemDefinedField(BaseField, SystemDefined):
+class SystemDefinedField(_KeepsUnmodelledKeys, BaseField, SystemDefined):
     field_type = FieldType.SYSTEM_DEFINED
     required_fields = ['option_layers', 'value_system']
     optional_fields = ['value_system_base']
@@ -256,7 +316,35 @@ class SystemDefinedField(BaseField, SystemDefined):
         super().__init__(sr, layer_key, json_data)
         SystemDefined.__init__(self, json_data)
         self._value_system_base: str | None = None
+        self._keep_source(json_data)
+        self._parsed = False
         self._parse_json()
+        self._parsed = True
+
+    @property
+    def option_layers(self) -> FieldUnit | str:
+        return SystemDefined.option_layers.fget(self)
+
+    @option_layers.setter
+    def option_layers(self, value: FieldUnit | str):
+        SystemDefined.option_layers.fset(self, value)
+        self._sync_value_system_base()
+
+    @property
+    def value_system(self) -> str:
+        return SystemDefined.value_system.fget(self)
+
+    @value_system.setter
+    def value_system(self, value: str):
+        SystemDefined.value_system.fset(self, value)
+        self._sync_value_system_base()
+
+    def _sync_value_system_base(self):
+        # As the designer does: changing the unit type or the unit sets the base unit to the
+        # (new) unit, so a stored base never names a unit of another unit type. Not while
+        # parsing (the stored base is kept as is), and never added where there is none.
+        if getattr(self, '_parsed', False) and self._value_system_base is not None:
+            self._value_system_base = self.value_system
 
     @property
     def value_system_base(self) -> str | None:
@@ -281,49 +369,20 @@ class SystemDefinedField(BaseField, SystemDefined):
         self._value_system_base = value
 
 
-class NumericField(BaseField):
-    """The ``number`` field type: a number with optional ``numeric`` settings.
-
-    ``numeric`` is ``{'decimals': int >= 0, 'min': number | str, 'max': number | str}``, every key
-    optional, as the ELN's template designer stores it.
-    """
+class NumericField(_KeepsUnmodelledKeys, BaseField, NumericSettings):
+    """The ``number`` field type: a number with optional ``numeric`` settings (see
+    :class:`NumericSettings`)."""
     field_type = FieldType.NUMBER
     optional_fields = ['numeric']
-    _NUMERIC_KEYS = ('decimals', 'min', 'max')
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         super().__init__(sr, layer_key, json_data)
         self._numeric: dict | None = None
+        self._keep_source(json_data)
         self._parse_json()
 
-    @property
-    def numeric(self) -> dict | None:
-        return self._numeric
 
-    @numeric.setter
-    def numeric(self, value: dict | None):
-        if value is None:
-            self._numeric = None
-            return
-        if not isinstance(value, dict):
-            raise TypeError(f"numeric {type(value)} not supported")
-        unknown = set(value) - set(self._NUMERIC_KEYS)
-        if unknown:
-            raise ValueError(f"numeric takes only {list(self._NUMERIC_KEYS)}, not {sorted(unknown)}")
-        decimals = value.get('decimals')
-        if decimals is not None:
-            if isinstance(decimals, bool) or not isinstance(decimals, int):
-                raise TypeError(f"numeric decimals {type(decimals)} not supported, use an int")
-            if decimals < 0:
-                raise ValueError("numeric decimals must be 0 or more")
-        for key in ('min', 'max'):
-            bound = value.get(key)
-            if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int | float | str)):
-                raise TypeError(f"numeric {key} {type(bound)} not supported, use a number or str")
-        self._numeric = dict(value)
-
-
-class OntologySelectField(BaseField):
+class OntologySelectField(_KeepsUnmodelledKeys, BaseField):
     """The ``ontology-select`` field type: a choice among the terms below ``ontology_term``.
 
     The ELN's template designer stores the root term as ``{'value': <TIB term id>, 'label': <label>}``,
@@ -340,6 +399,7 @@ class OntologySelectField(BaseField):
         self._json_data = {k: v for k, v in json_data.items() if k != 'ontology_term'}
         self._parse_json()
         self._json_data = json_data
+        self._keep_source(json_data)
 
     @property
     def ontology_term(self) -> dict | str | None:
@@ -354,7 +414,10 @@ class OntologySelectField(BaseField):
         if value is None or value == {}:
             self._ontology_term = None
         elif isinstance(value, str):
-            term = get_term(value)
+            try:
+                term = get_term(value)
+            except KeyError as e:  # get_term raises KeyError for an unknown ID
+                raise ValueError(f"unknown ontology term {value!r}") from e
             if term is None:
                 raise ValueError(f"unknown ontology term {value!r}")
             self._ontology_term = {'value': term['id'], 'label': term.get('label') or term['id']}

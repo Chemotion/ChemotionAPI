@@ -73,7 +73,7 @@ Notes:
   ``[{'key': ..., 'label': ...}]``; all lists of the template are in ``klass.properties.select_options``.
 * A NUMBER field takes optional ``field.numeric = {'decimals': 0, 'min': 0, 'max': 100}`` (every key
   optional; ``min``/``max`` may also be strings), as the template designer stores it. INTEGER is a separate
-  type.
+  type; it keeps ``numeric`` too, because the designer adds it to integer fields.
 * An ONTOLOGY_SELECT field offers the terms below ``field.ontology_term``: set a term ID (looked up online),
   a term dict from :meth:`~chemotion_api.labImotion.GenericManager.search_ontology_terms`, or ``None``. It is
   stored as ``{'value': <term id>, 'label': <label>}``, like the designer stores it.
@@ -81,8 +81,8 @@ Notes:
   designer fills it in when the template is edited in the web UI; the client keeps it and never adds it.
 * A field type this client does not know is kept as it is (an ``OpaqueField``), so the template still loads
   and saves.
-* ``create_new_element`` refuses the label of a built-in element type ('Sample', 'Research Plan', ...)
-  with ``ValueError``: the ELN would accept it without an error.
+* ``create_new_element`` refuses the label or ``name`` of a built-in element type ('Sample', 'Research
+  Plan', 'sample', ...) with ``ValueError``: the ELN would accept it without an error.
 * ``field.required`` and ``field.default`` are stored in the template.
 * ``field.ontology`` links a field to an ontology term, like "Link to ontology terminology" in the template
   designer. Terms come from the TIB Terminology Service (NFDI4Chem collection), the same service the
