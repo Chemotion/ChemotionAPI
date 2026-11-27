@@ -1,3 +1,5 @@
+import re
+
 from chemotion_api.labImotion.items.fields.abstract_fields import SystemDefined, Select, \
     _report_unknown_unit as _report_unknown_value
 from chemotion_api.labImotion.items.fields.sub_fields import SubBaseField, NUMBER_PATTERN
@@ -151,7 +153,7 @@ class TSNumber(TableSubBaseField):
     def to_dict(self):
         json_dict = super().to_dict()
         if self._numeric is not None:
-            json_dict['numeric'] = self._numeric
+            json_dict['numeric'] = dict(self._numeric)
         return json_dict
 
     @property
@@ -168,16 +170,31 @@ class TSNumber(TableSubBaseField):
         unknown = set(value) - set(self._NUMERIC_KEYS)
         if unknown:
             raise ValueError(f"numeric takes only {list(self._NUMERIC_KEYS)}, not {sorted(unknown)}")
-        decimals = value.get('decimals')
-        if decimals is not None:
+        # A key that is given may not be None: write '' for an unset bound, or leave the key out.
+        # (The schema reads a stored null leniently; this client does not write one.)
+        if 'decimals' in value:
+            decimals = value['decimals']
             if isinstance(decimals, bool) or not isinstance(decimals, int):
                 raise TypeError(f"numeric decimals {type(decimals)} not supported, use an int")
             if decimals < 0:
                 raise ValueError("numeric decimals must be 0 or more")
+        bounds = {}
         for key in ('min', 'max'):
-            bound = value.get(key)
-            if bound is not None and (isinstance(bound, bool) or not isinstance(bound, int | float | str)):
+            if key not in value:
+                continue
+            bound = value[key]
+            if isinstance(bound, bool) or not isinstance(bound, int | float | str):
                 raise TypeError(f"numeric {key} {type(bound)} not supported, use a number or str")
+            if isinstance(bound, str):
+                if bound.strip() == '':
+                    continue  # '' is how the designer stores an unset bound
+                # the designer reads a single ',' as the decimal point
+                if NUMBER_PATTERN.fullmatch(bound.strip().replace(',', '.')) is None:
+                    raise ValueError(f"numeric {key} must be a number or '': {bound!r}")
+                bound = float(bound.strip().replace(',', '.'))
+            bounds[key] = bound
+        if 'min' in bounds and 'max' in bounds and bounds['min'] > bounds['max']:
+            raise ValueError(f"numeric min {value['min']!r} is greater than max {value['max']!r}")
         self._numeric = dict(value)
 
     @property
@@ -217,6 +234,8 @@ class TSFormula(TableSubBaseField):
     field_type = SubTableFieldType.FORMULA_FIELD
     required_fields = ['formula', 'refs', 'decimal']
     _REF_KEYS = {'id', 'abbr'}
+    #: A variable name as the designer's formula editor accepts it.
+    _ABBR_PATTERN = re.compile(r'[a-zA-Z_][a-zA-Z0-9_]*')
 
     def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
         super().__init__(sr, layer_key, json_data)
@@ -226,6 +245,12 @@ class TSFormula(TableSubBaseField):
         for name in ('formula', 'refs', 'decimal'):
             if name in json_data:
                 self._set_lenient(name, json_data[name])
+
+    def to_dict(self):
+        json_dict = super().to_dict()
+        if isinstance(json_dict.get('refs'), list):
+            json_dict['refs'] = [dict(r) if isinstance(r, dict) else r for r in json_dict['refs']]
+        return json_dict
 
     @property
     def formula(self) -> str:
@@ -246,6 +271,7 @@ class TSFormula(TableSubBaseField):
         if not isinstance(value, list):
             raise TypeError(f"refs {type(value)} not supported, use a list of {{'id', 'abbr'}}")
         refs = []
+        seen_abbrs = set()
         for ref in value:
             if not isinstance(ref, dict):
                 raise TypeError(f"ref {type(ref)} not supported, use {{'id', 'abbr'}}")
@@ -253,9 +279,16 @@ class TSFormula(TableSubBaseField):
                 raise ValueError(f"a ref has exactly the keys 'id' and 'abbr', not {sorted(ref)}")
             if not isinstance(ref['id'], str) or not isinstance(ref['abbr'], str):
                 raise TypeError("a ref's 'id' and 'abbr' are strings")
-            if ref['abbr'].strip() == '':
+            abbr = ref['abbr'].strip()
+            if abbr == '':
                 raise ValueError("a ref needs a non-empty 'abbr' (the designer drops refs without one)")
-            refs.append({'id': ref['id'], 'abbr': ref['abbr'].strip()})
+            if self._ABBR_PATTERN.fullmatch(abbr) is None:
+                raise ValueError(f"abbr {abbr!r} is invalid: use letters, digits and underscore, "
+                                 f"not starting with a digit")
+            if abbr in seen_abbrs:
+                raise ValueError(f"abbr {abbr!r} is used more than once")
+            seen_abbrs.add(abbr)
+            refs.append({'id': ref['id'], 'abbr': abbr})
         self._refs = refs
 
     def add_ref(self, column: TableSubBaseField | str, abbr: str) -> TSFormula:
@@ -265,6 +298,8 @@ class TSFormula(TableSubBaseField):
         :return: this column, so calls can be chained
         """
         column_id = column if isinstance(column, str) else column.id
+        if column_id == self.id:
+            raise ValueError("a formula column cannot reference itself")
         self.refs = self.refs + [{'id': column_id, 'abbr': abbr}]
         return self
 
@@ -277,7 +312,7 @@ class TSFormula(TableSubBaseField):
         if isinstance(value, bool) or not isinstance(value, int | str):
             raise TypeError(f"decimal {type(value)} not supported, use an int")
         if isinstance(value, str):
-            if not value.strip().isdigit():
+            if not (value.strip().isascii() and value.strip().isdigit()):
                 raise ValueError(f"decimal must be a whole number of 0 or more: {value!r}")
             value = int(value)
         if value < 0:
@@ -296,4 +331,8 @@ class TSOpaque(TableSubBaseField):
         self._value = json_data.get('value', '')
 
     def to_dict(self):
-        return dict(self._json_data) | super().to_dict()
+        json_dict = dict(self._json_data) | super().to_dict()
+        for key in ('col_name', 'value'):
+            if key not in self._json_data and json_dict.get(key) == '':
+                del json_dict[key]  # keep the column as the server sent it
+        return json_dict

@@ -66,58 +66,65 @@ generic_schema = {
                     },
                     "type": {
                         "type": "string"
-                    },
-                    "value": {
-                        "type": "string"
-                    },
-                    "value_system": {
-                        "type": "string"
-                    },
-                    "option_layers": {
-                        "type": "string"
-                    },
-                    "col_name": {
-                        "type": "string"
-                    },
-                    # ELN v4 / LabIMotion 2.3 additions.
-                    "_checksum": {
-                        "type": ["string", "null"]
-                    },
-                    "is_new": {
-                        "type": ["boolean", "null"]
-                    },
-                    # A formula column of a table (ELN 4.0 designer), issue #61: the formula, the
-                    # columns its variables stand for, and the decimal places (an int; text read too).
-                    "formula": {
-                        "type": "string"
-                    },
-                    "refs": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {"id": {"type": "string"}, "abbr": {"type": "string"}},
-                            "additionalProperties": False,
-                            "required": ["id", "abbr"]
-                        }
-                    },
-                    "decimal": {
-                        "type": ["integer", "string"]
-                    },
-                    # The number settings of a number column, as on a number field.
-                    "numeric": {
-                        "type": "object",
-                        "properties": {
-                            "decimals": {"type": "integer", "minimum": 0},
-                            "min": {"type": ["number", "string"]},
-                            "max": {"type": ["number", "string"]}
-                        },
-                        "additionalProperties": False
                     }
                 },
-                # A sub-field of a known type may carry only the keys above; one of a type this
-                # client does not know may carry any keys and is kept as it is (TSOpaque).
+                # A sub-field of a known type may carry only the keys below, with these types; one of
+                # a type this client does not know may carry any keys and values and is kept as it is
+                # (TSOpaque), so its keys are not checked at all.
                 "unevaluatedProperties": False,
                 "if": {"properties": {"type": {"enum": _KNOWN_SUB_FIELD_TYPES}}},
+                "then": {
+                    "properties": {
+                        "value": {
+                            "type": "string"
+                        },
+                        "value_system": {
+                            "type": "string"
+                        },
+                        "option_layers": {
+                            "type": "string"
+                        },
+                        "col_name": {
+                            "type": "string"
+                        },
+                        # ELN v4 / LabIMotion 2.3 additions.
+                        "_checksum": {
+                            "type": ["string", "null"]
+                        },
+                        "is_new": {
+                            "type": ["boolean", "null"]
+                        },
+                        # A formula column of a table (ELN 4.0 designer), issue #61: the formula, the
+                        # columns its variables stand for, and the decimal places (an int; text read
+                        # too). Read as leniently as the designer reads them: TSFormula keeps a value
+                        # its setters refuse as stored.
+                        "formula": {
+                            "type": "string"
+                        },
+                        "refs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {"id": {"type": "string"}, "abbr": {"type": "string"}},
+                                "required": ["id", "abbr"]
+                            }
+                        },
+                        "decimal": {
+                            "type": ["integer", "string"]
+                        },
+                        # The number settings of a number column, as on a number field. The designer
+                        # reads decimals with parseInt and empty bounds as unset; TSNumber keeps what
+                        # its setter refuses as stored.
+                        "numeric": {
+                            "type": "object",
+                            "properties": {
+                                "decimals": {"type": ["integer", "string"]},
+                                "min": {"type": ["number", "string", "null"]},
+                                "max": {"type": ["number", "string", "null"]}
+                            }
+                        }
+                    }
+                },
                 "else": {"additionalProperties": True},
                 # `value` is no longer required — v4 omits it on freshly added sub-fields.
                 "required": [
