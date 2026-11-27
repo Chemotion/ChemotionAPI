@@ -110,6 +110,16 @@ class Layer(ChemotionSerializable, ConditionHandler):
                     self._json_data[key] = [x.to_dict() for x in value]
                 else:
                     self._json_data[key] = value
+        # Written whether or not the layer was loaded with them: the loop above only writes keys
+        # `_json_data` already has, which dropped conditions added to a new layer, or added again
+        # after they were cleared. Cleared restrictions (cond_fields = None) drop their keys, as
+        # the designer does; a null would not load again.
+        for key in ('cond_fields', 'cond_operator'):
+            value = getattr(self, key)
+            if value is None:
+                self._json_data.pop(key, None)
+            else:
+                self._json_data[key] = value.value if isinstance(value, Enum) else value
         return self._json_data
 
     @property

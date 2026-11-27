@@ -21,13 +21,8 @@ class ConditionHandler:
         if field.field_type == FieldType.SELECT:
             options = self._sr.get_select_options()[field.option_layers]
             if value not in options:
-                def find_label():
-                    for key, label in options:
-                        if value == label:
-                            return key
-                    return None
-
-                value = find_label()
+                # Not a key: take the option whose label it is, and store its key
+                value = next((key for key, label in options.items() if label == value), None)
             if value is None:
                 raise ValueError(f"Value must be in {', '.join(options.values())}")
 
@@ -62,6 +57,7 @@ class ConditionHandler:
         if value is None:
             self._cond_operator = None
             self._cond_fields = None
+            return
         if not isinstance(value, list):
             raise TypeError(f"cond_fields {type(value)} not supported")
         self._cond_fields = value
@@ -75,11 +71,9 @@ class ConditionHandler:
     @cond_operator.setter
     def cond_operator(self, value: ConditionOperator | int | None):
         if value is None:
-            if self.cond_fields is None:
-                self._cond_operator = None
-                return
-            else:
-                self._cond_operator = ConditionOperator.MATCH_ONE
+            # With conditions set, None means the default operator
+            self._cond_operator = None if self.cond_fields is None else ConditionOperator.MATCH_ONE
+            return
         if isinstance(value, int):
             value = ConditionOperator(value)
         if not isinstance(value, ConditionOperator):
