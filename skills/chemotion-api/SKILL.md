@@ -316,7 +316,7 @@ el.properties['user_labels'] = [label.id]; el.save()              # label = inst
 ## More element types
 
 ```python
-screen = col.new_screen(); screen.add_wellplate(plate); screen.save()
+screen = col.new_screen(); screen.wellplate_ids.append(plate.id); screen.save()   # plate must be saved
 cl = col.new_cell_line('HeLa', 'ATCC'); cl.properties['passage'] = 3; cl.save()   # cl.material: shared
 dev = col.new_device_description(); dev.properties['vendor_company_name'] = 'Bruker'; dev.save()
 sb = col.new_sbmm_sample('P61626'); sb.save()     # from a UniProt accession; sb.macromolecule is read-only
