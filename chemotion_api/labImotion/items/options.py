@@ -59,6 +59,12 @@ class FieldType(ListableEnum):
     TEXT = 'text'
     TEXTAREA = 'textarea'
     UPLOAD = 'upload'
+    #: Not declared in the gem's field_type.rb either, but offered by the ELN's template designer
+    #: (chem-generic-ui) and used by shipped declarations (e.g. BioSample). Do not delete when
+    #: re-syncing from the gem.
+    NUMBER = 'number'
+    #: Designer-only like NUMBER ("Ontology Select"): a choice among the subtree of ``ontology_term``.
+    ONTOLOGY_SELECT = 'ontology-select'
 
 
 class ConditionOperator(ListableEnum):
