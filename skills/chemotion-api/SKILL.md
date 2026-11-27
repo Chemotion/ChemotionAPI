@@ -222,6 +222,8 @@ New type: `gm.create_new_element('Micro Biology', 'bug', prefix='MB')` returns a
 `k.properties.add_new_layer(...).add_field(FieldType.TEXT, 'Strain')`, then `k.save(SaveActionType.MINOR)` (see api.md §10).
 Ontology terms on fields: `field.ontology = 'CHMO:0000593'` (or `add_field(..., ontology=...)`); search with
 `gm.search_ontology_terms('nmr')`; read on elements with `g.field(layer, field).ontology`.
+Also `FieldType.NUMBER` (`field.numeric = {'decimals': 0, 'min': 0}`), `FieldType.ONTOLOGY_SELECT`
+(`field.ontology_term = 'OBI:0000070'`), select `field.options()`. A built-in label ('Sample') raises ValueError.
 
 ## Segments (extra tabs, all element types)
 
