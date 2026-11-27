@@ -62,6 +62,18 @@ class NumberField(SubBaseField):
     field_type = SubFieldType.NUMBER
     default = "0"
 
+    def __init__(self, sr: StructureRegistry, layer_key: str, json_data: dict):
+        super().__init__(sr, layer_key, json_data)
+        # The sub-field schema admits a number's `numeric` settings; keep them, so a save does not
+        # drop what the designer stored.
+        self._numeric = json_data.get('numeric')
+
+    def to_dict(self):
+        json_dict = super().to_dict()
+        if self._numeric is not None:
+            json_dict['numeric'] = dict(self._numeric) if isinstance(self._numeric, dict) else self._numeric
+        return json_dict
+
     @property
     def value(self) -> str:
         return self._value
