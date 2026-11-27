@@ -19,12 +19,16 @@ class ConditionHandler:
 
     def add_condition(self, field: SelectField | TextField | CheckboxField, value: str | bool):
         if field.field_type == FieldType.SELECT:
-            options = self._sr.get_select_options()[field.option_layers]
+            options = self._sr.get_select_options().get(field.option_layers)
+            if options is None:
+                raise ValueError(f'Select field "{field.field}" uses the option list "{field.option_layers}", '
+                                 'which the template does not define')
             if value not in options:
                 # Not a key: take the option whose label it is, and store its key
                 value = next((key for key, label in options.items() if label == value), None)
             if value is None:
-                raise ValueError(f"Value must be in {', '.join(options.values())}")
+                raise ValueError(f"Value must be an option label or key: labels {', '.join(map(str, options.values()))}"
+                                 f"; keys {', '.join(map(str, options.keys()))}")
 
 
         elif field.field_type == FieldType.TEXT:
