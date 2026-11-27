@@ -1,5 +1,8 @@
-from chemotion_api.labImotion.items.options import FieldType
+from chemotion_api.labImotion.items.options import FieldType, SubFieldType, SubTableFieldType
 from chemotion_api.labImotion.items.validation.registry import SchemaRegistry
+
+#: Types of input-group sub-fields and table columns this client models.
+_KNOWN_SUB_FIELD_TYPES = sorted(set(SubFieldType.list()) | set(SubTableFieldType.list()))
 
 generic_schema = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -79,9 +82,40 @@ generic_schema = {
                     },
                     "is_new": {
                         "type": ["boolean", "null"]
+                    },
+                    # A formula column of a table (ELN 4.0 designer), issue #61: the formula, the
+                    # columns its variables stand for, and the decimal places (an int; text read too).
+                    "formula": {
+                        "type": "string"
+                    },
+                    "refs": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"id": {"type": "string"}, "abbr": {"type": "string"}},
+                            "additionalProperties": False,
+                            "required": ["id", "abbr"]
+                        }
+                    },
+                    "decimal": {
+                        "type": ["integer", "string"]
+                    },
+                    # The number settings of a number column, as on a number field.
+                    "numeric": {
+                        "type": "object",
+                        "properties": {
+                            "decimals": {"type": "integer", "minimum": 0},
+                            "min": {"type": ["number", "string"]},
+                            "max": {"type": ["number", "string"]}
+                        },
+                        "additionalProperties": False
                     }
                 },
-                "additionalProperties": False,
+                # A sub-field of a known type may carry only the keys above; one of a type this
+                # client does not know may carry any keys and is kept as it is (TSOpaque).
+                "unevaluatedProperties": False,
+                "if": {"properties": {"type": {"enum": _KNOWN_SUB_FIELD_TYPES}}},
+                "else": {"additionalProperties": True},
                 # `value` is no longer required — v4 omits it on freshly added sub-fields.
                 "required": [
                     "id",
